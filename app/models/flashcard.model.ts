@@ -49,6 +49,19 @@ const FlashcardSchema = new Schema({
         index: true
     }],
 
+    // Primary linked question (1:1 relationship for promoted flashcards)
+    linkedQuestionId: {
+        type: Schema.Types.ObjectId,
+        ref: 'Question',
+        index: true
+    },
+
+    // Whether this flashcard can be used in quizzes/exams
+    canBeQuizzed: {
+        type: Boolean,
+        default: false
+    },
+
     // Difficulty level (1-5, used for initial scheduling)
     difficulty: {
         type: Number,
@@ -118,6 +131,8 @@ FlashcardSchema.index({ category: 1, isActive: 1 });
 FlashcardSchema.index({ tags: 1 });
 FlashcardSchema.index({ createdBy: 1, isActive: 1 });
 FlashcardSchema.index({ questionIds: 1 });
+FlashcardSchema.index({ linkedQuestionId: 1 });
+FlashcardSchema.index({ canBeQuizzed: 1, isActive: 1 });
 
 export const Flashcard = mongoose.model('Flashcard', FlashcardSchema);
 export { FlashcardSchema };

@@ -167,6 +167,149 @@ export default function (app, express, services) {
     }
   });
 
+  // ==================== QUIZ MODE & QUESTION LINKING ====================
+
+  // Get all quizzable flashcards - must be before /:id routes
+  router.get('/flashcards/quizzable', async (req, res) => {
+    try {
+      const { category, categoryId, limit, skip, sort } = req.query;
+
+      const filters: any = {};
+      if (category) filters.category = category;
+      if (categoryId) filters.categoryId = categoryId;
+
+      const options: any = {};
+      if (limit) options.limit = parseInt(limit as string, 10);
+      if (skip) options.skip = parseInt(skip as string, 10);
+      if (sort) options.sort = JSON.parse(sort as string);
+
+      const flashcards = await flashcardService.getQuizzableFlashcards(filters, options);
+      const total = await flashcardService.count({ canBeQuizzed: true, ...filters });
+
+      res.json({ result: flashcards, total });
+    } catch (error: any) {
+      console.error('[Flashcards] Get quizzable error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get flashcard by linked question ID - must be before /:id routes
+  router.get('/flashcards/linked-question/:questionId', async (req, res) => {
+    try {
+      const flashcard = await flashcardService.getByLinkedQuestionId(req.params.questionId);
+      if (!flashcard) {
+        return res.status(404).json({ error: 'No flashcard linked to this question' });
+      }
+      res.json({ result: flashcard });
+    } catch (error: any) {
+      console.error('[Flashcards] Get by linked question error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Enable quiz mode for a flashcard
+  router.post('/flashcards/:id/quiz/enable', async (req, res) => {
+    try {
+      const { linkedQuestionId } = req.body;
+      const flashcard = await flashcardService.enableQuizMode(req.params.id, linkedQuestionId);
+      if (!flashcard) {
+        return res.status(404).json({ error: 'Flashcard not found' });
+      }
+      res.json({ result: flashcard });
+    } catch (error: any) {
+      console.error('[Flashcards] Enable quiz mode error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Disable quiz mode for a flashcard
+  router.post('/flashcards/:id/quiz/disable', async (req, res) => {
+    try {
+      const { unlinkQuestion } = req.body;
+      const flashcard = await flashcardService.disableQuizMode(req.params.id, unlinkQuestion);
+      if (!flashcard) {
+        return res.status(404).json({ error: 'Flashcard not found' });
+      }
+      res.json({ result: flashcard });
+    } catch (error: any) {
+      console.error('[Flashcards] Disable quiz mode error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Link flashcard to a primary question (1:1)
+  router.post('/flashcards/:id/link/:questionId', async (req, res) => {
+    try {
+      const flashcard = await flashcardService.linkToQuestion(req.params.id, req.params.questionId);
+      if (!flashcard) {
+        return res.status(404).json({ error: 'Flashcard not found' });
+      }
+      res.json({ result: flashcard });
+    } catch (error: any) {
+      console.error('[Flashcards] Link to question error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Unlink flashcard from primary question
+  router.delete('/flashcards/:id/link', async (req, res) => {
+    try {
+      const flashcard = await flashcardService.unlinkFromQuestion(req.params.id);
+      if (!flashcard) {
+        return res.status(404).json({ error: 'Flashcard not found' });
+      }
+      res.json({ result: flashcard });
+    } catch (error: any) {
+      console.error('[Flashcards] Unlink from question error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Bulk enable quiz mode
+  router.post('/flashcards/bulk/quiz/enable', async (req, res) => {
+    try {
+      const { flashcardIds } = req.body;
+      if (!flashcardIds || !Array.isArray(flashcardIds)) {
+        return res.status(400).json({ error: 'flashcardIds array is required' });
+      }
+      const result = await flashcardService.bulkEnableQuizMode(flashcardIds);
+      res.json({ result, modifiedCount: result.modifiedCount });
+    } catch (error: any) {
+      console.error('[Flashcards] Bulk enable quiz mode error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Bulk link flashcards to questions
+  router.post('/flashcards/bulk/link', async (req, res) => {
+    try {
+      const { mappings } = req.body;
+      if (!mappings || !Array.isArray(mappings)) {
+        return res.status(400).json({ error: 'mappings array is required' });
+      }
+      const result = await flashcardService.bulkLinkToQuestions(mappings);
+      res.json({ result, modifiedCount: result.modifiedCount });
+    } catch (error: any) {
+      console.error('[Flashcards] Bulk link error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Convert flashcard to question format (for promotion)
+  router.get('/flashcards/:id/promote', async (req, res) => {
+    try {
+      const flashcard = await flashcardService.getById(req.params.id);
+      if (!flashcard) {
+        return res.status(404).json({ error: 'Flashcard not found' });
+      }
+      const questionData = flashcardService.flashcardToQuestionData(flashcard);
+      res.json({ result: questionData, flashcard });
+    } catch (error: any) {
+      console.error('[Flashcards] Promote error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ==================== USER PROGRESS ====================
 
   // Get user's progress for all cards

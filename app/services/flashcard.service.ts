@@ -148,4 +148,142 @@ export class FlashcardService {
             ]
         }, options);
     }
+
+    // ============================================
+    // Quiz Mode & Question Linking Methods
+    // ============================================
+
+    /**
+     * Enable quiz mode for a flashcard (makes it available for exams)
+     * Optionally link to an existing question
+     */
+    async enableQuizMode(flashcardId: string, linkedQuestionId?: string) {
+        const updateData: any = { canBeQuizzed: true };
+        if (linkedQuestionId) {
+            updateData.linkedQuestionId = new mongoose.Types.ObjectId(linkedQuestionId);
+        }
+        return await Flashcard.findByIdAndUpdate(
+            flashcardId,
+            { $set: updateData },
+            { new: true }
+        );
+    }
+
+    /**
+     * Disable quiz mode for a flashcard
+     * Optionally unlink from question
+     */
+    async disableQuizMode(flashcardId: string, unlinkQuestion: boolean = false) {
+        const updateData: any = { canBeQuizzed: false };
+        if (unlinkQuestion) {
+            return await Flashcard.findByIdAndUpdate(
+                flashcardId,
+                { $set: { canBeQuizzed: false }, $unset: { linkedQuestionId: 1 } },
+                { new: true }
+            );
+        }
+        return await Flashcard.findByIdAndUpdate(
+            flashcardId,
+            { $set: updateData },
+            { new: true }
+        );
+    }
+
+    /**
+     * Link flashcard to a primary question (1:1 relationship)
+     */
+    async linkToQuestion(flashcardId: string, questionId: string) {
+        return await Flashcard.findByIdAndUpdate(
+            flashcardId,
+            { $set: { linkedQuestionId: new mongoose.Types.ObjectId(questionId) } },
+            { new: true }
+        );
+    }
+
+    /**
+     * Unlink flashcard from its primary question
+     */
+    async unlinkFromQuestion(flashcardId: string) {
+        return await Flashcard.findByIdAndUpdate(
+            flashcardId,
+            { $unset: { linkedQuestionId: 1 } },
+            { new: true }
+        );
+    }
+
+    /**
+     * Get all quizzable flashcards (can be included in exams)
+     */
+    async getQuizzableFlashcards(filters: any = {}, options: { limit?: number; skip?: number; sort?: any } = {}) {
+        return await this.getAll({ canBeQuizzed: true, ...filters }, options);
+    }
+
+    /**
+     * Get flashcard by its linked question ID
+     */
+    async getByLinkedQuestionId(questionId: string) {
+        return await Flashcard.findOne({
+            linkedQuestionId: new mongoose.Types.ObjectId(questionId),
+            isActive: true
+        });
+    }
+
+    /**
+     * Bulk enable quiz mode for multiple flashcards
+     */
+    async bulkEnableQuizMode(flashcardIds: string[]) {
+        const objectIds = flashcardIds.map(id => new mongoose.Types.ObjectId(id));
+        return await Flashcard.updateMany(
+            { _id: { $in: objectIds } },
+            { $set: { canBeQuizzed: true } }
+        );
+    }
+
+    /**
+     * Bulk link flashcards to questions
+     * @param mappings Array of { flashcardId, questionId } objects
+     */
+    async bulkLinkToQuestions(mappings: Array<{ flashcardId: string; questionId: string }>) {
+        const bulkOps = mappings.map(mapping => ({
+            updateOne: {
+                filter: { _id: new mongoose.Types.ObjectId(mapping.flashcardId) },
+                update: {
+                    $set: {
+                        linkedQuestionId: new mongoose.Types.ObjectId(mapping.questionId),
+                        canBeQuizzed: true
+                    }
+                }
+            }
+        }));
+        return await Flashcard.bulkWrite(bulkOps);
+    }
+
+    /**
+     * Convert flashcard data to question format for promotion
+     * This is used when creating a question from a flashcard
+     */
+    flashcardToQuestionData(flashcard: any) {
+        return {
+            question: flashcard.front,
+            answer: flashcard.back,
+            explanation: flashcard.hint || '',
+            type: flashcard.fen ? 'chess' : 'flashcard',
+            difficulty: flashcard.difficulty || 3,
+            category: flashcard.category,
+            categoryId: flashcard.categoryId,
+            tags: flashcard.tags || [],
+            sourceType: 'flashcard',
+            sourceId: flashcard._id?.toString(),
+            // Chess-specific fields
+            fen: flashcard.fen,
+            pgn: flashcard.pgn,
+            openingName: flashcard.openingName,
+            // Media
+            questionImage: flashcard.frontImage,
+            answerImage: flashcard.backImage,
+            // Metadata
+            createdBy: flashcard.createdBy,
+            isPublic: flashcard.isPublic
+        };
+    }
 }
