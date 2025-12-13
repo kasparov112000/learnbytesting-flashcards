@@ -1,0 +1,50 @@
+{
+  "name": "flashcards",
+  "version": "1.0.0",
+  "private": true,
+  "templatetype": "microservice",
+  "templateversion": "1.0.0",
+  "description": "Flashcards microservice for LearnByTesting.ai",
+  "main": "./app/server.ts",
+  "scripts": {
+    "build": "tsc --module commonjs",
+    "start": "ts-node-dev --respawn --transpile-only ./app/server.ts",
+    "start:build": "npm run build && node ./build/index.js",
+    "start:watch": "ts-node-dev --respawn --transpile-only ./app/server.ts",
+    "start:tsnode": "ts-node ./app/server.ts",
+    "test": "jest --coverage --coverageDirectory=output/coverage/jest",
+    "dev": "ts-node-dev --respawn --transpile-only ./app/server.ts"
+  },
+  "dependencies": {
+    "@types/mongoose": "^5.2.5",
+    "axios": "~1.13.2",
+    "body-parser": "^1.18.3",
+    "dotenv": "^6.0.0",
+    "express": "^4.16.3",
+    "hipolito-framework": "^1.0.6",
+    "hipolito-models": "^1.0.12",
+    "http": "0.0.0",
+    "http-status": "^1.4.2",
+    "lodash": "^4.17.10",
+    "mongo-sanitize": "^1.1.0",
+    "mongoose": "^5.11.20",
+    "mongoose-query-parser": "^1.1.5",
+    "morgan": "^1.9.0",
+    "swagger-ui-express": "^3.0.10",
+    "ts-node": "^10.9.1",
+    "typescript": "^4.8.3",
+    "typescript-require": "^0.2.10",
+    "winston": "^3.2.1",
+    "yamljs": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/body-parser": "^1.17.0",
+    "@types/dotenv": "^4.0.3",
+    "@types/lodash": "^4.14.116",
+    "@types/morgan": "^1.7.35",
+    "eslint": "^4.16.0",
+    "jest": "^25.1.0",
+    "ts-node-dev": "^1.0.0-pre.44",
+    "tslint": "^5.11.0"
+  }
+}
