@@ -53,6 +53,20 @@ export class FlashcardService {
     }
 
     /**
+     * Get flashcards by root/main category (for filtering all cards in a domain)
+     */
+    async getByRootCategory(rootCategoryId: string, options: { limit?: number; skip?: number } = {}) {
+        return await this.getAll({ rootCategoryId: new mongoose.Types.ObjectId(rootCategoryId) }, options);
+    }
+
+    /**
+     * Get flashcards by child/sub category (for specific topic evaluation)
+     */
+    async getByChildCategory(childCategoryId: string, options: { limit?: number; skip?: number } = {}) {
+        return await this.getAll({ childCategoryId: new mongoose.Types.ObjectId(childCategoryId) }, options);
+    }
+
+    /**
      * Get flashcards by question ID (many-to-many lookup)
      */
     async getByQuestionId(questionId: string) {

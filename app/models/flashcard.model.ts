@@ -24,13 +24,35 @@ const FlashcardSchema = new Schema({
         type: String
     },
 
-    // Category for organization (e.g., "Opening Theory", "Tactics", "Endgames")
+    // Full category ancestry chain (from root to most specific)
+    // Enables hierarchical filtering: query any level to get all cards beneath it
+    // Example: [{ _id: "chess", name: "Chess" }, { _id: "openings", name: "Openings" }, { _id: "italian", name: "Italian Game" }]
+    categories: [{
+        _id: { type: Schema.Types.ObjectId, ref: 'Category' },
+        name: { type: String }
+    }],
+
+    // Array of category IDs for efficient querying (denormalized from categories array)
+    // Query: { categoryIds: "chess-id" } returns ALL cards under Chess
+    categoryIds: [{
+        type: Schema.Types.ObjectId,
+        ref: 'Category',
+        index: true
+    }],
+
+    // The most specific (deepest) category - used for display and evaluation
+    primaryCategory: {
+        _id: { type: Schema.Types.ObjectId, ref: 'Category' },
+        name: { type: String }
+    },
+
+    // Legacy field for backward compatibility
     category: {
         type: String,
         index: true
     },
 
-    // Reference to category document
+    // Legacy reference to category document
     categoryId: {
         type: Schema.Types.ObjectId,
         ref: 'Category',
@@ -128,6 +150,8 @@ const FlashcardSchema = new Schema({
 
 // Indexes for common queries
 FlashcardSchema.index({ category: 1, isActive: 1 });
+FlashcardSchema.index({ categoryIds: 1, isActive: 1 });  // Main index for hierarchical queries
+FlashcardSchema.index({ 'primaryCategory._id': 1, isActive: 1 });
 FlashcardSchema.index({ tags: 1 });
 FlashcardSchema.index({ createdBy: 1, isActive: 1 });
 FlashcardSchema.index({ questionIds: 1 });

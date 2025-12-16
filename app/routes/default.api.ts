@@ -47,11 +47,20 @@ export default function (app, express, services) {
   // Get all flashcards with filtering
   router.get('/flashcards', async (req, res) => {
     try {
-      const { category, categoryId, tag, userId, limit, skip, sort } = req.query;
+      const { category, categoryId, filterCategoryId, tag, userId, limit, skip, sort } = req.query;
 
       const filters: any = {};
       if (category) filters.category = category;
-      if (categoryId) filters.categoryId = categoryId;
+
+      // Hierarchical category filtering - finds all cards that have this category in their ancestry
+      // This is the main filter: selecting "Chess" returns ALL chess cards including openings, tactics, etc.
+      if (filterCategoryId) {
+        filters.categoryIds = filterCategoryId;  // MongoDB will match if filterCategoryId is in the array
+      } else if (categoryId) {
+        // Legacy support - filter by exact categoryId
+        filters.categoryId = categoryId;
+      }
+
       if (tag) filters.tags = tag;
       if (userId) filters.createdBy = userId;
 
