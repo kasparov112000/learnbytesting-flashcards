@@ -47,23 +47,27 @@ export class FlashcardService {
 
     /**
      * Get flashcards by category
+     * Supports both MongoDB ObjectId and string/UUID category IDs
      */
     async getByCategory(categoryId: string, options: { limit?: number; skip?: number } = {}) {
-        return await this.getAll({ categoryId: new mongoose.Types.ObjectId(categoryId) }, options);
+        // Use categoryIds array for hierarchical lookup (supports Mixed type)
+        return await this.getAll({ categoryIds: categoryId }, options);
     }
 
     /**
      * Get flashcards by root/main category (for filtering all cards in a domain)
+     * Uses categoryIds array which contains all ancestor IDs
      */
     async getByRootCategory(rootCategoryId: string, options: { limit?: number; skip?: number } = {}) {
-        return await this.getAll({ rootCategoryId: new mongoose.Types.ObjectId(rootCategoryId) }, options);
+        return await this.getAll({ categoryIds: rootCategoryId }, options);
     }
 
     /**
      * Get flashcards by child/sub category (for specific topic evaluation)
+     * Uses primaryCategory._id for exact match on deepest category
      */
     async getByChildCategory(childCategoryId: string, options: { limit?: number; skip?: number } = {}) {
-        return await this.getAll({ childCategoryId: new mongoose.Types.ObjectId(childCategoryId) }, options);
+        return await this.getAll({ 'primaryCategory._id': childCategoryId }, options);
     }
 
     /**

@@ -27,22 +27,24 @@ const FlashcardSchema = new Schema({
     // Full category ancestry chain (from root to most specific)
     // Enables hierarchical filtering: query any level to get all cards beneath it
     // Example: [{ _id: "chess", name: "Chess" }, { _id: "openings", name: "Openings" }, { _id: "italian", name: "Italian Game" }]
+    // Note: _id uses Mixed type to support both ObjectId and UUID/String formats (categories use Mixed _id)
     categories: [{
-        _id: { type: Schema.Types.ObjectId, ref: 'Category' },
+        _id: { type: Schema.Types.Mixed },
         name: { type: String }
     }],
 
     // Array of category IDs for efficient querying (denormalized from categories array)
     // Query: { categoryIds: "chess-id" } returns ALL cards under Chess
+    // Note: Uses Mixed type to support both ObjectId and UUID/String formats
     categoryIds: [{
-        type: Schema.Types.ObjectId,
-        ref: 'Category',
+        type: Schema.Types.Mixed,
         index: true
     }],
 
     // The most specific (deepest) category - used for display and evaluation
+    // Note: _id uses Mixed type to support both ObjectId and UUID/String formats
     primaryCategory: {
-        _id: { type: Schema.Types.ObjectId, ref: 'Category' },
+        _id: { type: Schema.Types.Mixed },
         name: { type: String }
     },
 
@@ -53,9 +55,9 @@ const FlashcardSchema = new Schema({
     },
 
     // Legacy reference to category document
+    // Note: Uses Mixed type to support both ObjectId and UUID/String formats
     categoryId: {
-        type: Schema.Types.ObjectId,
-        ref: 'Category',
+        type: Schema.Types.Mixed,
         index: true
     },
 
