@@ -1,6 +1,6 @@
 import { MicroserviceConnection } from "../app/models/contracts/microservice";
 const ENV_NAME = process.env.ENV_NAME || 'LOCAL';
-const msport = 3017;
+const msport = 3027;
 
 const serviceConfigs = {
   port: msport,
