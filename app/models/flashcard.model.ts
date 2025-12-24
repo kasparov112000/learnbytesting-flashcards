@@ -144,6 +144,12 @@ const FlashcardSchema = new Schema({
     isActive: {
         type: Boolean,
         default: true
+    },
+
+    // Environment where flashcard was created (e.g., 'LOCAL', 'PROD')
+    environment: {
+        type: String,
+        default: 'PROD'
     }
 }, {
     timestamps: true,

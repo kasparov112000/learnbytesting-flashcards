@@ -1,7 +1,10 @@
+// Load environment variables FIRST, before any other imports
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import * as express from 'express';
 import * as bodyParser from 'body-parser';
 import * as morgan from 'morgan';
-import * as dotenv from 'dotenv';
 import * as mongoSanitize from 'mongo-sanitize';
 
 import { DbService } from './services/db.service';
@@ -16,9 +19,6 @@ const app = express();
 const dbService = new DbService();
 let services: any = {};
 const loggerWrapper = new LoggerWrapper(`flashcards 1.0`);
-
-// Get environment vars
-dotenv.config();
 
 app.use(bodyParser.urlencoded({
   extended: true
