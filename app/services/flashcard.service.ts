@@ -155,16 +155,19 @@ export class FlashcardService {
     /**
      * Search flashcards by text
      */
-    async search(searchText: string, options: { limit?: number; skip?: number } = {}) {
+    async search(searchText: string, filters: any = {}, options: { limit?: number; skip?: number } = {}) {
         const regex = new RegExp(searchText, 'i');
-        return await this.getAll({
+        // Combine text search with user filters
+        const searchFilters = {
+            ...filters,
             $or: [
                 { front: regex },
                 { back: regex },
                 { hint: regex },
                 { tags: regex }
             ]
-        }, options);
+        };
+        return await this.getAll(searchFilters, options);
     }
 
     // ============================================
@@ -304,4 +307,146 @@ export class FlashcardService {
             isPublic: flashcard.isPublic
         };
     }
+
+
+    /**
+     * Get flashcards for ag-grid with server-side pagination using aggregate pipeline
+     * Similar to auditlogs getGrid implementation
+     */
+    async getGrid(gridRequest: any): Promise<{ rows: any[]; lastRow: number; total?: number }> {
+        try {
+            const startRow = gridRequest?.startRow || 0;
+            const endRow = gridRequest?.endRow || 50;
+            const limit = endRow - startRow;
+
+            console.log('[FLASHCARD-GRID] Request:', { startRow, endRow, limit });
+
+            // Build match stage for filtering
+            const matchStage: any = { isActive: true };
+
+            // Apply category filter (hierarchical)
+            if (gridRequest?.filterCategoryId) {
+                matchStage.categoryIds = gridRequest.filterCategoryId;
+            }
+
+            // Apply user filter (for data isolation)
+            if (gridRequest?.userId) {
+                matchStage.createdBy = gridRequest.userId;
+            }
+
+            // Apply search filter if present
+            const searchText = gridRequest?.search?.search;
+            if (searchText && searchText.trim()) {
+                const searchRegex = new RegExp(searchText.trim(), 'i');
+                matchStage.$or = [
+                    { front: searchRegex },
+                    { back: searchRegex },
+                    { hint: searchRegex },
+                    { tags: searchRegex },
+                    { 'category.name': searchRegex }
+                ];
+            }
+
+            // Apply column filters from ag-grid filterModel
+            if (gridRequest?.filterModel) {
+                Object.entries(gridRequest.filterModel).forEach(([field, filter]: [string, any]) => {
+                    if (filter.filterType === 'text') {
+                        if (filter.type === 'contains') {
+                            matchStage[field] = new RegExp(filter.filter, 'i');
+                        } else if (filter.type === 'equals') {
+                            matchStage[field] = filter.filter;
+                        } else if (filter.type === 'startsWith') {
+                            matchStage[field] = new RegExp(`^${filter.filter}`, 'i');
+                        }
+                    } else if (filter.filterType === 'set' && filter.values) {
+                        matchStage[field] = { $in: filter.values };
+                    } else if (filter.filterType === 'date') {
+                        const dateFilter: any = {};
+                        if (filter.dateFrom) {
+                            dateFilter.$gte = new Date(filter.dateFrom);
+                        }
+                        if (filter.dateTo) {
+                            dateFilter.$lte = new Date(filter.dateTo);
+                        }
+                        if (Object.keys(dateFilter).length > 0) {
+                            matchStage[field] = dateFilter;
+                        }
+                    }
+                });
+            }
+
+            // Build sort stage
+            let sortStage: any = { createdDate: -1 }; // Default sort
+            if (gridRequest?.sortModel && gridRequest.sortModel.length > 0) {
+                sortStage = {};
+                gridRequest.sortModel.forEach(sort => {
+                    sortStage[sort.colId] = sort.sort === 'asc' ? 1 : -1;
+                });
+            }
+
+            // Build aggregate pipeline
+            const pipeline: any[] = [];
+
+            // Match stage (always has at least isActive: true)
+            pipeline.push({ $match: matchStage });
+
+            // Sort stage
+            pipeline.push({ $sort: sortStage });
+
+            // Use $facet for efficient pagination with total count
+            pipeline.push({
+                $facet: {
+                    rows: [
+                        { $skip: startRow },
+                        { $limit: limit }
+                    ],
+                    totalCount: [
+                        { $count: 'count' }
+                    ]
+                }
+            });
+
+            console.log('[FLASHCARD-GRID] Pipeline:', JSON.stringify(pipeline, null, 2));
+
+            // Execute aggregate pipeline
+            const result = await Flashcard.aggregate(pipeline).exec();
+
+            const rows = result[0]?.rows || [];
+            const totalCount = result[0]?.totalCount[0]?.count || 0;
+
+            // Determine lastRow for ag-grid infinite scroll
+            const lastRow = startRow + rows.length >= totalCount ? totalCount : -1;
+
+            console.log('[FLASHCARD-GRID] Result:', {
+                rowCount: rows.length,
+                totalCount,
+                lastRow
+            });
+
+            // Log sample row for debugging
+            if (rows.length > 0) {
+                const sample = rows[0];
+                console.log('[FLASHCARD-GRID] Sample row keys:', Object.keys(sample));
+                console.log('[FLASHCARD-GRID] Sample row data:', JSON.stringify({
+                    _id: sample._id,
+                    front: sample.front,
+                    back: sample.back,
+                    category: sample.category,
+                    primaryCategory: sample.primaryCategory,
+                    categories: sample.categories
+                }, null, 2));
+            }
+
+            return {
+                rows,
+                lastRow,
+                total: totalCount
+            };
+
+        } catch (error) {
+            console.error('[FLASHCARD-GRID] Error:', error);
+            throw error;
+        }
+    }
+
 }

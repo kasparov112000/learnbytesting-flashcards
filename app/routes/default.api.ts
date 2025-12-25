@@ -1,5 +1,8 @@
 import { DbService } from '../services/db.service';
 
+// Get current environment for flashcard creation
+const ENV_NAME = process.env.ENV_NAME || 'LOCAL';
+
 export default function (app, express, services) {
   let router = express.Router();
   const status = require('http-status');
@@ -25,7 +28,9 @@ export default function (app, express, services) {
   // Create flashcard
   router.post('/flashcards', async (req, res) => {
     try {
-      const flashcard = await flashcardService.create(req.body);
+      // Auto-set environment based on current ENV_NAME
+      const flashcardData = { ...req.body, environment: ENV_NAME };
+      const flashcard = await flashcardService.create(flashcardData);
       res.status(201).json({ result: flashcard });
     } catch (error: any) {
       console.error('[Flashcards] Create error:', error);
@@ -36,10 +41,24 @@ export default function (app, express, services) {
   // Create multiple flashcards
   router.post('/flashcards/batch', async (req, res) => {
     try {
-      const flashcards = await flashcardService.createMany(req.body.flashcards);
+      // Auto-set environment for all flashcards
+      const flashcardsWithEnv = (req.body.flashcards || []).map(fc => ({ ...fc, environment: ENV_NAME }));
+      const flashcards = await flashcardService.createMany(flashcardsWithEnv);
       res.status(201).json({ result: flashcards, count: flashcards.length });
     } catch (error: any) {
       console.error('[Flashcards] Batch create error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // AG-Grid endpoint with aggregate pipeline for server-side pagination
+  router.post('/flashcards/grid', async (req, res) => {
+    try {
+      console.log('[Flashcards] Grid request:', JSON.stringify(req.body, null, 2));
+      const result = await flashcardService.getGrid(req.body);
+      res.json(result);
+    } catch (error: any) {
+      console.error('[Flashcards] Grid error:', error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -82,12 +101,16 @@ export default function (app, express, services) {
   // Search flashcards - must be before /:id route
   router.get('/flashcards/search/:query', async (req, res) => {
     try {
-      const { limit, skip } = req.query;
+      const { limit, skip, userId } = req.query;
       const options: any = {};
       if (limit) options.limit = parseInt(limit as string, 10);
       if (skip) options.skip = parseInt(skip as string, 10);
 
-      const flashcards = await flashcardService.search(req.params.query, options);
+      // Build filters for user-scoped search
+      const filters: any = {};
+      if (userId) filters.createdBy = userId;
+
+      const flashcards = await flashcardService.search(req.params.query, filters, options);
       res.json({ result: flashcards });
     } catch (error: any) {
       console.error('[Flashcards] Search error:', error);

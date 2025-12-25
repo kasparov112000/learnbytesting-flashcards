@@ -127,10 +127,9 @@ const FlashcardSchema = new Schema({
         type: String  // Video ID, import ID, etc.
     },
 
-    // Creator/owner
+    // Creator/owner (email or user identifier from JWT)
     createdBy: {
-        type: Schema.Types.ObjectId,
-        ref: 'User',
+        type: String,
         index: true
     },
 
