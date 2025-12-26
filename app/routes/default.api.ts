@@ -63,35 +63,78 @@ export default function (app, express, services) {
     }
   });
 
-  // Get all flashcards with filtering
+  // Get all flashcards with filtering and search (using aggregate pipeline)
   router.get('/flashcards', async (req, res) => {
     try {
-      const { category, categoryId, filterCategoryId, tag, userId, limit, skip, sort } = req.query;
+      const { category, categoryId, filterCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
-      const filters: any = {};
-      if (category) filters.category = category;
+      // Build match stage for aggregate pipeline
+      const matchStage: any = { isActive: true };
+
+      if (category) matchStage.category = category;
 
       // Hierarchical category filtering - finds all cards that have this category in their ancestry
-      // This is the main filter: selecting "Chess" returns ALL chess cards including openings, tactics, etc.
       if (filterCategoryId) {
-        filters.categoryIds = filterCategoryId;  // MongoDB will match if filterCategoryId is in the array
+        matchStage.categoryIds = filterCategoryId;
       } else if (categoryId) {
-        // Legacy support - filter by exact categoryId
-        filters.categoryId = categoryId;
+        matchStage.categoryId = categoryId;
       }
 
-      if (tag) filters.tags = tag;
-      if (userId) filters.createdBy = userId;
+      if (tag) matchStage.tags = tag;
+      if (userId) matchStage.createdBy = userId;
 
-      const options: any = {};
-      if (limit) options.limit = parseInt(limit as string, 10);
-      if (skip) options.skip = parseInt(skip as string, 10);
-      if (sort) options.sort = JSON.parse(sort as string);
+      // Add search filter using $or with regex
+      if (search && (search as string).trim()) {
+        const searchRegex = new RegExp((search as string).trim(), 'i');
+        matchStage.$or = [
+          { front: searchRegex },
+          { back: searchRegex },
+          { hint: searchRegex },
+          { tags: searchRegex },
+          { 'category.name': searchRegex },
+          { 'primaryCategory.name': searchRegex }
+        ];
+      }
 
-      const flashcards = await flashcardService.getAll(filters, options);
-      const total = await flashcardService.count(filters);
+      // Calculate pagination
+      const pageNum = page ? parseInt(page as string, 10) : 1;
+      const size = pageSize ? parseInt(pageSize as string, 10) : (limit ? parseInt(limit as string, 10) : 12);
+      const skipCount = skip ? parseInt(skip as string, 10) : (pageNum - 1) * size;
 
-      res.json({ result: flashcards, total });
+      // Build sort stage
+      let sortStage: any = { createdAt: -1 };
+      if (sort) {
+        try {
+          sortStage = JSON.parse(sort as string);
+        } catch (e) {
+          // Keep default sort
+        }
+      }
+
+      // Use aggregate pipeline for efficient querying
+      const pipeline = [
+        { $match: matchStage },
+        { $sort: sortStage },
+        {
+          $facet: {
+            rows: [
+              { $skip: skipCount },
+              { $limit: size }
+            ],
+            totalCount: [
+              { $count: 'count' }
+            ]
+          }
+        }
+      ];
+
+      const Flashcard = require('../models/flashcard.model').default;
+      const result = await Flashcard.aggregate(pipeline).exec();
+
+      const flashcards = result[0]?.rows || [];
+      const total = result[0]?.totalCount[0]?.count || 0;
+
+      res.json({ result: flashcards, count: total, total });
     } catch (error: any) {
       console.error('[Flashcards] Get all error:', error);
       res.status(500).json({ error: error.message });
