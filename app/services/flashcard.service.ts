@@ -3,10 +3,33 @@ import * as mongoose from 'mongoose';
 
 export class FlashcardService {
     /**
+     * Ensure categoryIds array is populated from categories
+     * This denormalized field enables efficient hierarchical queries
+     */
+    private ensureCategoryIds(data: any): any {
+        // If categoryIds is already provided, use it
+        if (data.categoryIds && Array.isArray(data.categoryIds) && data.categoryIds.length > 0) {
+            return data;
+        }
+
+        // Extract categoryIds from categories array if present
+        if (data.categories && Array.isArray(data.categories) && data.categories.length > 0) {
+            const categoryIds = data.categories
+                .map(cat => cat._id || cat.id)
+                .filter(id => id != null);
+
+            return { ...data, categoryIds };
+        }
+
+        return data;
+    }
+
+    /**
      * Create a new flashcard
      */
     async create(data: any) {
-        const flashcard = new Flashcard(data);
+        const processedData = this.ensureCategoryIds(data);
+        const flashcard = new Flashcard(processedData);
         return await flashcard.save();
     }
 
@@ -14,7 +37,8 @@ export class FlashcardService {
      * Create multiple flashcards at once
      */
     async createMany(flashcards: any[]) {
-        return await Flashcard.insertMany(flashcards);
+        const processedFlashcards = flashcards.map(fc => this.ensureCategoryIds(fc));
+        return await Flashcard.insertMany(processedFlashcards);
     }
 
     /**

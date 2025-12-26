@@ -43,8 +43,21 @@ export default function (app, express, services) {
   // Create multiple flashcards
   router.post('/flashcards/batch', async (req, res) => {
     try {
+      // Handle case where body contains { response: "<JSON string>" } (from HITL/AI workflows)
+      let requestBody = req.body;
+      if (req.body.response && typeof req.body.response === 'string') {
+        console.log('[Flashcards] Parsing response field as JSON string...');
+        try {
+          const parsed = JSON.parse(req.body.response);
+          requestBody = parsed;
+          console.log('[Flashcards] Parsed response successfully, flashcards count:', parsed.flashcards?.length || 0);
+        } catch (parseErr: any) {
+          console.error('[Flashcards] Failed to parse response field:', parseErr.message);
+        }
+      }
+
       // Auto-set environment for all flashcards
-      const flashcardsWithEnv = (req.body.flashcards || []).map(fc => ({ ...fc, environment: ENV_NAME }));
+      const flashcardsWithEnv = (requestBody.flashcards || []).map(fc => ({ ...fc, environment: ENV_NAME }));
       const flashcards = await flashcardService.createMany(flashcardsWithEnv);
       res.status(201).json({ result: flashcards, count: flashcards.length });
     } catch (error: any) {
