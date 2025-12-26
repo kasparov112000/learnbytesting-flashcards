@@ -69,7 +69,7 @@ export default function (app, express, services) {
       const { category, categoryId, filterCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
       // Build match stage for aggregate pipeline
-      const matchStage: any = { isActive: true };
+      const matchStage: any = {};
 
       if (category) matchStage.category = category;
 
