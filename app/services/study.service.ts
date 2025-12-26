@@ -105,14 +105,26 @@ export class StudyService {
 
     /**
      * Submit an answer for a flashcard
+     * @param userId - User ID
+     * @param flashcardId - Flashcard ID
+     * @param rating - FSRS rating (1-4) or legacy quality (0-5 if useLegacyQuality=true)
+     * @param responseTimeMs - Time taken to respond in milliseconds
+     * @param useLegacyQuality - If true, treat rating as SM-2 quality (0-5) and convert to FSRS
      */
-    async submitAnswer(userId: string, flashcardId: string, quality: number, responseTimeMs?: number) {
+    async submitAnswer(
+        userId: string,
+        flashcardId: string,
+        rating: number,
+        responseTimeMs?: number,
+        useLegacyQuality: boolean = false
+    ) {
         // Process the review
         const progress = await this.userProgressService.processReview(
             userId,
             flashcardId,
-            quality,
-            responseTimeMs
+            rating,
+            responseTimeMs,
+            useLegacyQuality
         );
 
         // Get the next card

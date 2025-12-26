@@ -1,5 +1,6 @@
 import { DbService } from '../services/db.service';
 import { Flashcard } from '../models';
+import { FSRSService } from '../services/fsrs.service';
 
 // Get current environment for flashcard creation
 const ENV_NAME = process.env.ENV_NAME || 'LOCAL';
@@ -71,7 +72,7 @@ export default function (app, express, services) {
 
       // Build match stage for aggregate pipeline
       // All filters are combined with AND logic (MongoDB implicit $and)
-      const matchStage: any = {};
+      const matchStage: any = { isActive: true };
 
       if (category) matchStage.category = category;
 
@@ -83,14 +84,21 @@ export default function (app, express, services) {
       }
 
       if (tag) matchStage.tags = tag;
-      if (userId) matchStage.createdBy = userId;
+
+      // User visibility filter: users see their own cards OR public cards
+      if (userId) {
+        matchStage.$or = [
+          { createdBy: userId },
+          { isPublic: true }
+        ];
+      }
 
       // Add search filter using $or with regex
       // Combined with AND for other filters: (categoryIds = X) AND (front OR back OR hint matches search)
       if (search && (search as string).trim()) {
         const searchText = (search as string).trim();
         const searchRegex = new RegExp(searchText, 'i');
-        matchStage.$or = [
+        const searchConditions = [
           { front: searchRegex },
           { back: searchRegex },
           { hint: searchRegex },
@@ -99,6 +107,18 @@ export default function (app, express, services) {
           { 'primaryCategory.name': searchRegex },
           { 'categories.name': searchRegex }
         ];
+
+        // If we already have an $or for visibility, wrap both in $and
+        if (matchStage.$or) {
+          const visibilityCondition = { $or: matchStage.$or };
+          delete matchStage.$or;
+          matchStage.$and = [
+            visibilityCondition,
+            { $or: searchConditions }
+          ];
+        } else {
+          matchStage.$or = searchConditions;
+        }
       }
 
       console.log('[Flashcards] Query params:', { filterCategoryId, search, userId, page, pageSize });
@@ -157,8 +177,14 @@ export default function (app, express, services) {
       if (skip) options.skip = parseInt(skip as string, 10);
 
       // Build filters for user-scoped search
+      // Users can see their own cards OR public cards
       const filters: any = {};
-      if (userId) filters.createdBy = userId;
+      if (userId) {
+        filters.$or = [
+          { createdBy: userId },
+          { isPublic: true }
+        ];
+      }
 
       const flashcards = await flashcardService.search(req.params.query, filters, options);
       res.json({ result: flashcards });
@@ -416,6 +442,48 @@ export default function (app, express, services) {
     }
   });
 
+  // Get FSRS scheduling preview - shows what each rating would do
+  router.get('/progress/:userId/schedule/:flashcardId', async (req, res) => {
+    try {
+      const preview = await userProgressService.getSchedulingPreview(
+        req.params.userId,
+        req.params.flashcardId
+      );
+      res.json({ result: preview });
+    } catch (error: any) {
+      console.error('[Flashcards] Get schedule preview error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get retrievability (probability of recall) for a card
+  router.get('/progress/:userId/retrievability/:flashcardId', async (req, res) => {
+    try {
+      const retrievability = await userProgressService.getRetrievability(
+        req.params.userId,
+        req.params.flashcardId
+      );
+      res.json({ result: { retrievability, percentage: Math.round(retrievability * 100) } });
+    } catch (error: any) {
+      console.error('[Flashcards] Get retrievability error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Migrate a card from SM-2 to FSRS
+  router.post('/progress/:userId/migrate/:flashcardId', async (req, res) => {
+    try {
+      const progress = await userProgressService.migrateToFSRS(
+        req.params.userId,
+        req.params.flashcardId
+      );
+      res.json({ result: progress, message: 'Card migrated to FSRS' });
+    } catch (error: any) {
+      console.error('[Flashcards] Migrate to FSRS error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Suspend a card
   router.post('/progress/:userId/suspend/:flashcardId', async (req, res) => {
     try {
@@ -506,22 +574,44 @@ export default function (app, express, services) {
     }
   });
 
-  // Submit answer
+  // Submit answer - supports both FSRS (rating 1-4) and legacy SM-2 (quality 0-5)
   router.post('/study/:userId/answer/:flashcardId', async (req, res) => {
     try {
-      const { quality, responseTimeMs } = req.body;
+      const { rating, quality, responseTimeMs, useLegacyQuality } = req.body;
 
-      if (quality === undefined || quality < 0 || quality > 5) {
+      // Determine which rating system to use
+      let fsrsRating: number;
+      let isLegacy = false;
+
+      if (rating !== undefined) {
+        // New FSRS rating (1-4)
+        if (!FSRSService.isValidRating(rating)) {
+          return res.status(400).json({
+            error: 'Rating must be 1 (Again), 2 (Hard), 3 (Good), or 4 (Easy)'
+          });
+        }
+        fsrsRating = rating;
+      } else if (quality !== undefined) {
+        // Legacy SM-2 quality (0-5) - convert to FSRS
+        if (quality < 0 || quality > 5) {
+          return res.status(400).json({
+            error: 'Quality must be a number between 0 and 5'
+          });
+        }
+        fsrsRating = quality;  // Will be converted by service
+        isLegacy = true;
+      } else {
         return res.status(400).json({
-          error: 'Quality must be a number between 0 and 5'
+          error: 'Either rating (1-4) or quality (0-5) must be provided'
         });
       }
 
       const result = await studyService.submitAnswer(
         req.params.userId,
         req.params.flashcardId,
-        quality,
-        responseTimeMs
+        fsrsRating,
+        responseTimeMs,
+        isLegacy || useLegacyQuality
       );
       res.json({ result });
     } catch (error: any) {

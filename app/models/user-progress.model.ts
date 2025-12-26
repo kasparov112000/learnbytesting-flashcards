@@ -22,7 +22,58 @@ const UserProgressSchema = new Schema({
         index: true
     },
 
-    // ===== SM-2 Algorithm Fields =====
+    // ===== Algorithm Selection =====
+
+    // Which algorithm is active for this card
+    algorithm: {
+        type: String,
+        enum: ['sm2', 'fsrs'],
+        default: 'fsrs'
+    },
+
+    // ===== FSRS Algorithm Fields =====
+
+    // Stability - time in days for retrievability to drop to 90%
+    stability: {
+        type: Number,
+        default: 0
+    },
+
+    // Difficulty - inherent content difficulty [1-10]
+    // Lower = easier to remember, higher = harder
+    fsrsDifficulty: {
+        type: Number,
+        default: 0,
+        min: 0,
+        max: 10
+    },
+
+    // Days elapsed since last review
+    elapsed_days: {
+        type: Number,
+        default: 0
+    },
+
+    // Scheduled interval until next review (in days)
+    scheduled_days: {
+        type: Number,
+        default: 0
+    },
+
+    // Learning step counter (for learning/relearning phases)
+    learning_steps: {
+        type: Number,
+        default: 0
+    },
+
+    // FSRS state: New(0), Learning(1), Review(2), Relearning(3)
+    fsrsState: {
+        type: Number,
+        enum: [0, 1, 2, 3],
+        default: 0
+    },
+
+    // ===== SM-2 Algorithm Fields (Legacy) =====
 
     // Easiness Factor (EF) - starts at 2.5, min 1.3
     // Higher = easier card, longer intervals
@@ -74,10 +125,11 @@ const UserProgressSchema = new Schema({
     // History of reviews
     reviewHistory: [{
         date: { type: Date, default: Date.now },
-        quality: { type: Number, min: 0, max: 5 },
+        quality: { type: Number, min: 0, max: 5 },  // SM-2: 0-5, FSRS: 1-4
         responseTimeMs: { type: Number },  // How long it took to answer
         intervalBefore: { type: Number },
-        intervalAfter: { type: Number }
+        intervalAfter: { type: Number },
+        algorithm: { type: String, enum: ['sm2', 'fsrs'], default: 'fsrs' }
     }],
 
     // ===== Statistics =====
@@ -135,6 +187,8 @@ UserProgressSchema.index({ userId: 1, flashcardId: 1 }, { unique: true });
 // Index for finding due cards
 UserProgressSchema.index({ userId: 1, nextReviewDate: 1, isSuspended: 1 });
 UserProgressSchema.index({ userId: 1, state: 1 });
+UserProgressSchema.index({ userId: 1, algorithm: 1 });
+UserProgressSchema.index({ userId: 1, fsrsState: 1 });
 
 /**
  * SM-2 Algorithm Implementation

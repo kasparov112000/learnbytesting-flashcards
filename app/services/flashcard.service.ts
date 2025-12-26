@@ -157,16 +157,32 @@ export class FlashcardService {
      */
     async search(searchText: string, filters: any = {}, options: { limit?: number; skip?: number } = {}) {
         const regex = new RegExp(searchText, 'i');
-        // Combine text search with user filters
-        const searchFilters = {
-            ...filters,
-            $or: [
-                { front: regex },
-                { back: regex },
-                { hint: regex },
-                { tags: regex }
-            ]
-        };
+        const searchConditions = [
+            { front: regex },
+            { back: regex },
+            { hint: regex },
+            { tags: regex }
+        ];
+
+        // Handle combining visibility $or with search $or using $and
+        let searchFilters: any;
+        if (filters.$or) {
+            // If there's already a visibility $or filter, wrap both in $and
+            const visibilityCondition = { $or: filters.$or };
+            const { $or: _, ...otherFilters } = filters;
+            searchFilters = {
+                ...otherFilters,
+                $and: [
+                    visibilityCondition,
+                    { $or: searchConditions }
+                ]
+            };
+        } else {
+            searchFilters = {
+                ...filters,
+                $or: searchConditions
+            };
+        }
         return await this.getAll(searchFilters, options);
     }
 
@@ -330,21 +346,37 @@ export class FlashcardService {
             }
 
             // Apply user filter (for data isolation)
+            // Users can see their own cards OR any public cards
             if (gridRequest?.userId) {
-                matchStage.createdBy = gridRequest.userId;
+                matchStage.$or = [
+                    { createdBy: gridRequest.userId },
+                    { isPublic: true }
+                ];
             }
 
             // Apply search filter if present
             const searchText = gridRequest?.search?.search;
             if (searchText && searchText.trim()) {
                 const searchRegex = new RegExp(searchText.trim(), 'i');
-                matchStage.$or = [
+                const searchConditions = [
                     { front: searchRegex },
                     { back: searchRegex },
                     { hint: searchRegex },
                     { tags: searchRegex },
                     { 'category.name': searchRegex }
                 ];
+
+                // If we already have an $or for visibility, wrap both in $and
+                if (matchStage.$or) {
+                    const visibilityCondition = { $or: matchStage.$or };
+                    delete matchStage.$or;
+                    matchStage.$and = [
+                        visibilityCondition,
+                        { $or: searchConditions }
+                    ];
+                } else {
+                    matchStage.$or = searchConditions;
+                }
             }
 
             // Apply column filters from ag-grid filterModel
