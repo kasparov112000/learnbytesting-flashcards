@@ -70,6 +70,7 @@ export default function (app, express, services) {
       const { category, categoryId, filterCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
       // Build match stage for aggregate pipeline
+      // All filters are combined with AND logic (MongoDB implicit $and)
       const matchStage: any = {};
 
       if (category) matchStage.category = category;
@@ -85,17 +86,23 @@ export default function (app, express, services) {
       if (userId) matchStage.createdBy = userId;
 
       // Add search filter using $or with regex
+      // Combined with AND for other filters: (categoryIds = X) AND (front OR back OR hint matches search)
       if (search && (search as string).trim()) {
-        const searchRegex = new RegExp((search as string).trim(), 'i');
+        const searchText = (search as string).trim();
+        const searchRegex = new RegExp(searchText, 'i');
         matchStage.$or = [
           { front: searchRegex },
           { back: searchRegex },
           { hint: searchRegex },
           { tags: searchRegex },
           { 'category.name': searchRegex },
-          { 'primaryCategory.name': searchRegex }
+          { 'primaryCategory.name': searchRegex },
+          { 'categories.name': searchRegex }
         ];
       }
+
+      console.log('[Flashcards] Query params:', { filterCategoryId, search, userId, page, pageSize });
+      console.log('[Flashcards] Match stage:', JSON.stringify(matchStage, null, 2));
 
       // Calculate pagination
       const pageNum = page ? parseInt(page as string, 10) : 1;
