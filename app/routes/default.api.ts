@@ -1,4 +1,5 @@
 import { DbService } from '../services/db.service';
+import { Flashcard } from '../models';
 
 // Get current environment for flashcard creation
 const ENV_NAME = process.env.ENV_NAME || 'LOCAL';
@@ -128,7 +129,6 @@ export default function (app, express, services) {
         }
       ];
 
-      const Flashcard = require('../models/flashcard.model').default;
       const result = await Flashcard.aggregate(pipeline).exec();
 
       const flashcards = result[0]?.rows || [];
