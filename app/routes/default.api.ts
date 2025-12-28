@@ -650,9 +650,11 @@ export default function (app, express, services) {
   // ==================== ANALYTICS ====================
 
   // Get analytics dashboard summary
+  // Optional query param: categoryId - filter analytics to specific category
   router.get('/analytics/:userId/summary', async (req, res) => {
     try {
-      const summary = await analyticsService.getSummary(req.params.userId);
+      const categoryId = req.query.categoryId as string | undefined;
+      const summary = await analyticsService.getSummary(req.params.userId, categoryId);
       res.json({ result: summary });
     } catch (error: any) {
       console.error('[Flashcards] Get analytics summary error:', error);
@@ -661,10 +663,12 @@ export default function (app, express, services) {
   });
 
   // Get mastery trend over time
+  // Optional query params: days, categoryId
   router.get('/analytics/:userId/mastery-trend', async (req, res) => {
     try {
       const days = parseInt(req.query.days as string || '30', 10);
-      const trend = await analyticsService.getMasteryTrend(req.params.userId, days);
+      const categoryId = req.query.categoryId as string | undefined;
+      const trend = await analyticsService.getMasteryTrend(req.params.userId, days, categoryId);
       res.json({ result: trend });
     } catch (error: any) {
       console.error('[Flashcards] Get mastery trend error:', error);
@@ -673,9 +677,11 @@ export default function (app, express, services) {
   });
 
   // Get category statistics
+  // Optional query param: categoryId - show stats for subcategories of this category
   router.get('/analytics/:userId/category-stats', async (req, res) => {
     try {
-      const stats = await analyticsService.getCategoryStats(req.params.userId);
+      const categoryId = req.query.categoryId as string | undefined;
+      const stats = await analyticsService.getCategoryStats(req.params.userId, categoryId);
       res.json({ result: stats });
     } catch (error: any) {
       console.error('[Flashcards] Get category stats error:', error);
@@ -695,10 +701,12 @@ export default function (app, express, services) {
   });
 
   // Get heatmap data
+  // Optional query params: months, categoryId
   router.get('/analytics/:userId/heatmap', async (req, res) => {
     try {
       const months = parseInt(req.query.months as string || '12', 10);
-      const heatmap = await analyticsService.getHeatmapData(req.params.userId, months);
+      const categoryId = req.query.categoryId as string | undefined;
+      const heatmap = await analyticsService.getHeatmapData(req.params.userId, months, categoryId);
       res.json({ result: heatmap });
     } catch (error: any) {
       console.error('[Flashcards] Get heatmap error:', error);
@@ -719,10 +727,12 @@ export default function (app, express, services) {
   });
 
   // Get upcoming review forecast
+  // Optional query params: days, categoryId
   router.get('/analytics/:userId/forecast', async (req, res) => {
     try {
       const days = parseInt(req.query.days as string || '7', 10);
-      const forecast = await analyticsService.getForecast(req.params.userId, days);
+      const categoryId = req.query.categoryId as string | undefined;
+      const forecast = await analyticsService.getForecast(req.params.userId, days, categoryId);
       res.json({ result: forecast });
     } catch (error: any) {
       console.error('[Flashcards] Get analytics forecast error:', error);

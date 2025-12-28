@@ -1,7 +1,7 @@
 import { StudySession } from '../models/study-session.model';
 import { DailyActivity } from '../models/daily-activity.model';
 import { UserAnalytics } from '../models/user-analytics.model';
-import { UserProgress } from '../models';
+import { UserProgress, Flashcard } from '../models';
 
 /**
  * AnalyticsService - Handles all analytics calculations and data aggregation
@@ -10,16 +10,18 @@ export class AnalyticsService {
 
     /**
      * Get dashboard summary for a user
+     * @param userId User ID
+     * @param categoryId Optional category ID to filter by
      */
-    async getSummary(userId: string) {
+    async getSummary(userId: string, categoryId?: string) {
         // Get or create user analytics
         const analytics = await (UserAnalytics as any).getOrCreate(userId);
 
-        // Get current streak
-        const streakData = await (DailyActivity as any).calculateStreak(userId);
+        // Get current streak (category-specific if categoryId provided)
+        const streakData = await (DailyActivity as any).calculateStreak(userId, categoryId);
 
-        // Update streak in analytics if changed
-        if (streakData.currentStreak !== analytics.currentStreak) {
+        // Update streak in analytics if changed (only for global analytics)
+        if (!categoryId && streakData.currentStreak !== analytics.currentStreak) {
             analytics.currentStreak = streakData.currentStreak;
             analytics.lastStudyDate = streakData.lastStudyDate;
             if (streakData.currentStreak > analytics.longestStreak) {
@@ -31,41 +33,133 @@ export class AnalyticsService {
         // Get today's activity
         const today = new Date();
         today.setUTCHours(0, 0, 0, 0);
-        const todayActivity = await DailyActivity.findOne({ userId, date: today });
+        const todayQuery: any = { userId, date: today };
+        const todayActivity = await DailyActivity.findOne(todayQuery);
 
-        // Get total cards in system for this user
-        const totalCards = await UserProgress.countDocuments({ userId });
-        const masteredCards = await UserProgress.countDocuments({
-            userId,
-            stability: { $gte: 21 }  // Stability >= 21 days = mastered
-        });
+        // Build query filter for category using hierarchical filtering via flashcard IDs
+        let flashcardIds: any[] | null = null;
+        if (categoryId) {
+            // Get all flashcard IDs that belong to this category hierarchy
+            const flashcards = await Flashcard.find(
+                { categoryIds: categoryId, isActive: { $ne: false } },
+                { _id: 1 }
+            ).lean();
+            flashcardIds = flashcards.map((f: any) => f._id);
+        }
+
+        // Build query for user progress, optionally filtered by flashcard IDs
+        const cardQuery: any = { userId };
+        if (flashcardIds !== null) {
+            cardQuery.flashcardId = { $in: flashcardIds };
+        }
+
+        // Get total cards in system for this user (filtered by category if provided)
+        const totalCards = await UserProgress.countDocuments(cardQuery);
+
+        // Get mastered cards (stability >= 21 days)
+        const masteredQuery = { ...cardQuery, stability: { $gte: 21 } };
+        const masteredCards = await UserProgress.countDocuments(masteredQuery);
+
+        // Get new cards (state = 'new' or fsrsState = 0)
+        const newCardsQuery = { ...cardQuery, $or: [{ state: 'new' }, { fsrsState: 0 }] };
+        const newCards = await UserProgress.countDocuments(newCardsQuery);
+
+        // Get studying cards (not new and not mastered)
+        const studyingCards = totalCards - masteredCards - newCards;
+
+        // Get cards due for review (nextReviewDate <= now)
+        const now = new Date();
+        const dueCardsQuery = { ...cardQuery, nextReviewDate: { $lte: now }, isSuspended: { $ne: true } };
+        const dueCards = await UserProgress.countDocuments(dueCardsQuery);
+
+        // Calculate category-specific today progress if categoryId provided
+        let todayStats = {
+            cardsReviewed: 0,
+            studyTimeMinutes: 0,
+            accuracy: 0,
+            goalProgress: 0
+        };
+
+        if (todayActivity) {
+            if (categoryId) {
+                // Get category-specific stats from today's activity
+                const catStats = todayActivity.categories?.find(
+                    (c: any) => c.categoryId === categoryId
+                );
+                if (catStats) {
+                    todayStats = {
+                        cardsReviewed: catStats.count || 0,
+                        studyTimeMinutes: Math.round((catStats.studyTimeMs || 0) / 60000),
+                        accuracy: catStats.count > 0 && catStats.correctCount !== undefined
+                            ? Math.round((catStats.correctCount / catStats.count) * 100)
+                            : 0,
+                        goalProgress: analytics.dailyGoal > 0
+                            ? Math.min(100, Math.round(((catStats.count || 0) / analytics.dailyGoal) * 100))
+                            : 0
+                    };
+                }
+            } else {
+                todayStats = {
+                    cardsReviewed: todayActivity.cardsReviewed,
+                    studyTimeMinutes: Math.round(todayActivity.studyTimeMs / 60000),
+                    accuracy: todayActivity.getAccuracy(),
+                    goalProgress: analytics.dailyGoal > 0
+                        ? Math.min(100, Math.round((todayActivity.cardsReviewed / analytics.dailyGoal) * 100))
+                        : 0
+                };
+            }
+        }
+
+        // Get category-specific total reviews if categoryId provided
+        let totalReviews = analytics.totalCardsReviewed;
+        let studyHours = Math.round((analytics.totalStudyTimeMs / 3600000) * 10) / 10;
+        let ratingDistribution = analytics.ratingDistribution;
+
+        if (categoryId) {
+            // Aggregate category-specific stats from daily activities
+            const categoryAggregation = await DailyActivity.aggregate([
+                { $match: { userId } },
+                { $unwind: '$categories' },
+                { $match: { 'categories.categoryId': categoryId } },
+                {
+                    $group: {
+                        _id: null,
+                        totalReviews: { $sum: '$categories.count' },
+                        totalTimeMs: { $sum: '$categories.studyTimeMs' }
+                    }
+                }
+            ]);
+
+            if (categoryAggregation.length > 0) {
+                totalReviews = categoryAggregation[0].totalReviews || 0;
+                studyHours = Math.round(((categoryAggregation[0].totalTimeMs || 0) / 3600000) * 10) / 10;
+            } else {
+                totalReviews = 0;
+                studyHours = 0;
+            }
+        }
 
         return {
-            currentStreak: analytics.currentStreak,
-            longestStreak: analytics.longestStreak,
-            lastStudyDate: analytics.lastStudyDate,
+            currentStreak: streakData.currentStreak,
+            longestStreak: categoryId ? streakData.currentStreak : analytics.longestStreak,
+            lastStudyDate: streakData.lastStudyDate || analytics.lastStudyDate,
             totalCards: totalCards,
-            totalReviews: analytics.totalCardsReviewed,
-            studyHours: Math.round((analytics.totalStudyTimeMs / 3600000) * 10) / 10,
-            overallAccuracy: analytics.getOverallAccuracy(),
+            masteredCards: masteredCards,
+            newCards: newCards,
+            studyingCards: studyingCards,
+            dueCards: dueCards,
+            totalReviews: totalReviews,
+            studyHours: studyHours,
+            hoursStudied: studyHours,  // Alias for frontend compatibility
+            cardsToday: todayStats.cardsReviewed,
+            averageRetention: categoryId ? 0 : analytics.getOverallAccuracy(),  // Accuracy as retention metric
+            overallAccuracy: categoryId ? 0 : analytics.getOverallAccuracy(),
             overallMastery: totalCards > 0
                 ? Math.round((masteredCards / totalCards) * 1000) / 10
                 : 0,
             dailyGoal: analytics.dailyGoal,
-            todayProgress: todayActivity ? {
-                cardsReviewed: todayActivity.cardsReviewed,
-                studyTimeMinutes: Math.round(todayActivity.studyTimeMs / 60000),
-                accuracy: todayActivity.getAccuracy(),
-                goalProgress: analytics.dailyGoal > 0
-                    ? Math.min(100, Math.round((todayActivity.cardsReviewed / analytics.dailyGoal) * 100))
-                    : 0
-            } : {
-                cardsReviewed: 0,
-                studyTimeMinutes: 0,
-                accuracy: 0,
-                goalProgress: 0
-            },
-            ratingDistribution: analytics.ratingDistribution,
+            todayProgress: todayStats,
+            ratingDistribution: ratingDistribution,
             bestRecords: {
                 streak: analytics.bestStreak,
                 dailyCards: analytics.bestDailyCards,
@@ -76,8 +170,11 @@ export class AnalyticsService {
 
     /**
      * Get mastery trend over time (for line chart)
+     * @param userId User ID
+     * @param days Number of days to include
+     * @param categoryId Optional category ID to filter by
      */
-    async getMasteryTrend(userId: string, days: number = 30) {
+    async getMasteryTrend(userId: string, days: number = 30, categoryId?: string) {
         const endDate = new Date();
         endDate.setUTCHours(23, 59, 59, 999);
 
@@ -99,8 +196,22 @@ export class AnalyticsService {
             accuracy: number;
         }[] = [];
 
-        // Get current total cards
-        const totalCards = await UserProgress.countDocuments({ userId });
+        // Get current total cards (filtered by category if provided)
+        // Use flashcard IDs for hierarchical filtering via Flashcard model
+        let flashcardIds: any[] | null = null;
+        if (categoryId) {
+            const flashcards = await Flashcard.find(
+                { categoryIds: categoryId, isActive: { $ne: false } },
+                { _id: 1 }
+            ).lean();
+            flashcardIds = flashcards.map((f: any) => f._id);
+        }
+
+        const cardQuery: any = { userId };
+        if (flashcardIds !== null) {
+            cardQuery.flashcardId = { $in: flashcardIds };
+        }
+        const totalCards = await UserProgress.countDocuments(cardQuery);
 
         // For each day in the range, calculate the mastery at that point
         // This is an approximation based on cumulative reviews
@@ -108,8 +219,23 @@ export class AnalyticsService {
         let cumulativeTotal = 0;
 
         for (const activity of activities) {
-            cumulativeCorrect += activity.correctCount;
-            cumulativeTotal += activity.cardsReviewed;
+            let dayCorrect = activity.correctCount;
+            let dayTotal = activity.cardsReviewed;
+
+            // If filtering by category, get category-specific stats
+            if (categoryId && activity.categories) {
+                const catStats = activity.categories.find((c: any) => c.categoryId === categoryId);
+                if (catStats) {
+                    dayCorrect = catStats.correctCount || 0;
+                    dayTotal = catStats.count || 0;
+                } else {
+                    dayCorrect = 0;
+                    dayTotal = 0;
+                }
+            }
+
+            cumulativeCorrect += dayCorrect;
+            cumulativeTotal += dayTotal;
 
             const accuracy = cumulativeTotal > 0
                 ? Math.round((cumulativeCorrect / cumulativeTotal) * 1000) / 10
@@ -125,7 +251,7 @@ export class AnalyticsService {
             trend.push({
                 date: (activity.date as Date).toISOString().split('T')[0],
                 masteryPercent: estimatedMastery,
-                cardsReviewed: activity.cardsReviewed,
+                cardsReviewed: dayTotal,
                 accuracy
             });
         }
@@ -135,11 +261,25 @@ export class AnalyticsService {
 
     /**
      * Get category statistics
+     * @param userId User ID
+     * @param parentCategoryId Optional parent category ID to filter subcategories
      */
-    async getCategoryStats(userId: string) {
+    async getCategoryStats(userId: string, parentCategoryId?: string) {
+        // Build match query - use flashcard IDs for hierarchical filtering
+        const matchQuery: any = { userId };
+        if (parentCategoryId) {
+            // Get all flashcard IDs that belong to this category hierarchy
+            const flashcards = await Flashcard.find(
+                { categoryIds: parentCategoryId, isActive: { $ne: false } },
+                { _id: 1 }
+            ).lean();
+            const flashcardIds = flashcards.map((f: any) => f._id);
+            matchQuery.flashcardId = { $in: flashcardIds };
+        }
+
         // Get all user progress grouped by category
         const progressByCategory = await UserProgress.aggregate([
-            { $match: { userId } },
+            { $match: matchQuery },
             {
                 $group: {
                     _id: '$category',
@@ -206,8 +346,11 @@ export class AnalyticsService {
 
     /**
      * Get heatmap data (GitHub-style activity)
+     * @param userId User ID
+     * @param months Number of months to include
+     * @param categoryId Optional category ID to filter by
      */
-    async getHeatmapData(userId: string, months: number = 12) {
+    async getHeatmapData(userId: string, months: number = 12, categoryId?: string) {
         const endDate = new Date();
         const startDate = new Date();
         startDate.setMonth(startDate.getMonth() - months);
@@ -222,20 +365,28 @@ export class AnalyticsService {
             level: number;
         }[] = [];
 
-        // Find max cards for level calculation
-        const maxCards = Math.max(
-            ...activities.map(a => a.cardsReviewed),
-            1  // Avoid division by zero
-        );
+        // Build activity map, filtering by category if provided
+        const activityMap = new Map<string, number>();
+        let maxCards = 1;
+
+        for (const activity of activities) {
+            const dateStr = (activity.date as Date).toISOString().split('T')[0];
+            let count = activity.cardsReviewed;
+
+            // If filtering by category, get category-specific count
+            if (categoryId && activity.categories) {
+                const catStats = activity.categories.find((c: any) => c.categoryId === categoryId);
+                count = catStats?.count || 0;
+            }
+
+            activityMap.set(dateStr, count);
+            if (count > maxCards) {
+                maxCards = count;
+            }
+        }
 
         // Fill in all days in the range
         const currentDate = new Date(startDate);
-        const activityMap = new Map(
-            activities.map(a => [
-                (a.date as Date).toISOString().split('T')[0],
-                a.cardsReviewed
-            ])
-        );
 
         while (currentDate <= endDate) {
             const dateStr = currentDate.toISOString().split('T')[0];
@@ -396,9 +547,22 @@ export class AnalyticsService {
 
     /**
      * Get upcoming review forecast
+     * @param userId User ID
+     * @param days Number of days to forecast
+     * @param categoryId Optional category ID to filter by
      */
-    async getForecast(userId: string, days: number = 7) {
+    async getForecast(userId: string, days: number = 7, categoryId?: string) {
         const forecast: { date: string; count: number }[] = [];
+
+        // Get flashcard IDs for category filter (once, before the loop)
+        let flashcardIds: any[] | null = null;
+        if (categoryId) {
+            const flashcards = await Flashcard.find(
+                { categoryIds: categoryId, isActive: { $ne: false } },
+                { _id: 1 }
+            ).lean();
+            flashcardIds = flashcards.map((f: any) => f._id);
+        }
 
         for (let i = 0; i < days; i++) {
             const date = new Date();
@@ -408,11 +572,18 @@ export class AnalyticsService {
             const startOfDay = new Date(date);
             startOfDay.setHours(0, 0, 0, 0);
 
-            const count = await UserProgress.countDocuments({
+            // Build query with optional category filter - use flashcard IDs for hierarchical filtering
+            const query: any = {
                 userId: userId,
                 nextReviewDate: { $lte: date, $gte: startOfDay },
                 isSuspended: false
-            });
+            };
+
+            if (flashcardIds !== null) {
+                query.flashcardId = { $in: flashcardIds };
+            }
+
+            const count = await UserProgress.countDocuments(query);
 
             forecast.push({
                 date: date.toISOString().split('T')[0],
