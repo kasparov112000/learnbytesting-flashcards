@@ -1,6 +1,7 @@
 import { DbService } from '../services/db.service';
 import { Flashcard } from '../models';
 import { FSRSService } from '../services/fsrs.service';
+import { AnalyticsService } from '../services/analytics.service';
 
 // Get current environment for flashcard creation
 const ENV_NAME = process.env.ENV_NAME || 'LOCAL';
@@ -10,6 +11,7 @@ export default function (app, express, services) {
   const status = require('http-status');
 
   const { flashcardService, userProgressService, studyService } = services;
+  const analyticsService = new AnalyticsService();
 
   // ==================== HEALTH CHECK ====================
 
@@ -641,6 +643,175 @@ export default function (app, express, services) {
       res.json({ result: forecast });
     } catch (error: any) {
       console.error('[Flashcards] Get forecast error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ==================== ANALYTICS ====================
+
+  // Get analytics dashboard summary
+  router.get('/analytics/:userId/summary', async (req, res) => {
+    try {
+      const summary = await analyticsService.getSummary(req.params.userId);
+      res.json({ result: summary });
+    } catch (error: any) {
+      console.error('[Flashcards] Get analytics summary error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get mastery trend over time
+  router.get('/analytics/:userId/mastery-trend', async (req, res) => {
+    try {
+      const days = parseInt(req.query.days as string || '30', 10);
+      const trend = await analyticsService.getMasteryTrend(req.params.userId, days);
+      res.json({ result: trend });
+    } catch (error: any) {
+      console.error('[Flashcards] Get mastery trend error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get category statistics
+  router.get('/analytics/:userId/category-stats', async (req, res) => {
+    try {
+      const stats = await analyticsService.getCategoryStats(req.params.userId);
+      res.json({ result: stats });
+    } catch (error: any) {
+      console.error('[Flashcards] Get category stats error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get streak information
+  router.get('/analytics/:userId/streak', async (req, res) => {
+    try {
+      const streak = await analyticsService.getStreak(req.params.userId);
+      res.json({ result: streak });
+    } catch (error: any) {
+      console.error('[Flashcards] Get streak error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get heatmap data
+  router.get('/analytics/:userId/heatmap', async (req, res) => {
+    try {
+      const months = parseInt(req.query.months as string || '12', 10);
+      const heatmap = await analyticsService.getHeatmapData(req.params.userId, months);
+      res.json({ result: heatmap });
+    } catch (error: any) {
+      console.error('[Flashcards] Get heatmap error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get weekly summary
+  router.get('/analytics/:userId/weekly', async (req, res) => {
+    try {
+      const weeks = parseInt(req.query.weeks as string || '12', 10);
+      const weekly = await analyticsService.getWeeklySummary(req.params.userId, weeks);
+      res.json({ result: weekly });
+    } catch (error: any) {
+      console.error('[Flashcards] Get weekly summary error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get upcoming review forecast
+  router.get('/analytics/:userId/forecast', async (req, res) => {
+    try {
+      const days = parseInt(req.query.days as string || '7', 10);
+      const forecast = await analyticsService.getForecast(req.params.userId, days);
+      res.json({ result: forecast });
+    } catch (error: any) {
+      console.error('[Flashcards] Get analytics forecast error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get session history
+  router.get('/analytics/:userId/sessions', async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string || '10', 10);
+      const sessions = await analyticsService.getSessionHistory(req.params.userId, limit);
+      res.json({ result: sessions });
+    } catch (error: any) {
+      console.error('[Flashcards] Get session history error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Set daily goal
+  router.post('/analytics/:userId/daily-goal', async (req, res) => {
+    try {
+      const { goal } = req.body;
+      if (typeof goal !== 'number' || goal < 0) {
+        return res.status(400).json({ error: 'Goal must be a positive number' });
+      }
+      const result = await analyticsService.setDailyGoal(req.params.userId, goal);
+      res.json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Set daily goal error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Recalculate analytics (admin/maintenance)
+  router.post('/analytics/:userId/recalculate', async (req, res) => {
+    try {
+      const analytics = await analyticsService.recalculateAnalytics(req.params.userId);
+      res.json({ result: analytics, message: 'Analytics recalculated' });
+    } catch (error: any) {
+      console.error('[Flashcards] Recalculate analytics error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ==================== STUDY SESSIONS (ANALYTICS) ====================
+
+  // Start a tracked study session
+  router.post('/session/:userId/start', async (req, res) => {
+    try {
+      const { sessionType, targetCategoryId } = req.body;
+      const session = await analyticsService.startSession(
+        req.params.userId,
+        sessionType || 'all',
+        targetCategoryId
+      );
+      res.json({ result: session });
+    } catch (error: any) {
+      console.error('[Flashcards] Start session error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // End a tracked study session
+  router.post('/session/:sessionId/end', async (req, res) => {
+    try {
+      const stats = await analyticsService.endSession(req.params.sessionId);
+      res.json({ result: stats });
+    } catch (error: any) {
+      console.error('[Flashcards] End session error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Record a review within a session
+  router.post('/session/:sessionId/review', async (req, res) => {
+    try {
+      const { quality, responseTimeMs, categoryId, categoryName, isNewCard } = req.body;
+      const result = await analyticsService.recordReview(
+        req.params.sessionId,
+        quality,
+        responseTimeMs,
+        categoryId,
+        categoryName,
+        isNewCard
+      );
+      res.json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Record review error:', error);
       res.status(500).json({ error: error.message });
     }
   });
