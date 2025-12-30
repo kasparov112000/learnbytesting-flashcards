@@ -86,14 +86,23 @@ export default function (app, express, services) {
       const { category, categoryId, filterCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
       // Build match stage for aggregate pipeline
-      // All filters are combined with AND logic (MongoDB implicit $and)
+      // Use $and to combine multiple conditions properly
       const matchStage: any = { isActive: true };
+      const andConditions: any[] = [];
 
       if (category) matchStage.category = category;
 
       // Hierarchical category filtering - finds all cards that have this category in their ancestry
+      // Supports multiple fields for backward compatibility with flashcards that may not have categoryIds populated
       if (filterCategoryId) {
-        matchStage.categoryIds = filterCategoryId;
+        // Use $or to match flashcards by categoryIds array OR primaryCategory._id OR categories array
+        andConditions.push({
+          $or: [
+            { categoryIds: filterCategoryId },
+            { 'primaryCategory._id': filterCategoryId },
+            { 'categories._id': filterCategoryId }
+          ]
+        });
       } else if (categoryId) {
         matchStage.categoryId = categoryId;
       }
@@ -102,42 +111,48 @@ export default function (app, express, services) {
 
       // User visibility filter: users see their own cards OR public cards
       if (userId) {
-        matchStage.$or = [
-          { createdBy: userId },
-          { isPublic: true }
-        ];
+        andConditions.push({
+          $or: [
+            { createdBy: userId },
+            { isPublic: true }
+          ]
+        });
       }
 
       // Add search filter using $or with regex
-      // Combined with AND for other filters: (categoryIds = X) AND (front OR back OR hint matches search)
       if (search && (search as string).trim()) {
         const searchText = (search as string).trim();
         const searchRegex = new RegExp(searchText, 'i');
-        const searchConditions = [
-          { front: searchRegex },
-          { back: searchRegex },
-          { hint: searchRegex },
-          { tags: searchRegex },
-          { 'category.name': searchRegex },
-          { 'primaryCategory.name': searchRegex },
-          { 'categories.name': searchRegex }
-        ];
+        andConditions.push({
+          $or: [
+            { front: searchRegex },
+            { back: searchRegex },
+            { hint: searchRegex },
+            { tags: searchRegex },
+            { 'category.name': searchRegex },
+            { 'primaryCategory.name': searchRegex },
+            { 'categories.name': searchRegex }
+          ]
+        });
+      }
 
-        // If we already have an $or for visibility, wrap both in $and
-        if (matchStage.$or) {
-          const visibilityCondition = { $or: matchStage.$or };
-          delete matchStage.$or;
-          matchStage.$and = [
-            visibilityCondition,
-            { $or: searchConditions }
-          ];
-        } else {
-          matchStage.$or = searchConditions;
-        }
+      // Add $and conditions if any exist
+      if (andConditions.length > 0) {
+        matchStage.$and = andConditions;
       }
 
       console.log('[Flashcards] Query params:', { filterCategoryId, search, userId, page, pageSize });
       console.log('[Flashcards] Match stage:', JSON.stringify(matchStage, null, 2));
+
+      // Debug: Check if there are any flashcards with this categoryId in their categoryIds array
+      if (filterCategoryId) {
+        const testQuery = await Flashcard.countDocuments({ categoryIds: filterCategoryId, isActive: true });
+        console.log(`[Flashcards] DEBUG: Found ${testQuery} flashcards with categoryIds containing "${filterCategoryId}"`);
+
+        // Also check primaryCategory
+        const primaryCatQuery = await Flashcard.countDocuments({ 'primaryCategory._id': filterCategoryId, isActive: true });
+        console.log(`[Flashcards] DEBUG: Found ${primaryCatQuery} flashcards with primaryCategory._id = "${filterCategoryId}"`);
+      }
 
       // Calculate pagination
       const pageNum = page ? parseInt(page as string, 10) : 1;
