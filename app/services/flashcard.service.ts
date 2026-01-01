@@ -363,10 +363,42 @@ export class FlashcardService {
 
             // Build match stage for filtering
             const matchStage: any = { isActive: true };
+            const andConditions: any[] = [];
 
-            // Apply category filter (hierarchical)
-            if (gridRequest?.filterCategoryId) {
-                matchStage.categoryIds = gridRequest.filterCategoryId;
+            // Apply category filter (hierarchical) with comprehensive ID/name matching
+            if (gridRequest?.filterCategoryId || gridRequest?.filterCategoryName) {
+                const categoryConditions: any[] = [];
+
+                if (gridRequest?.filterCategoryId) {
+                    // Try to convert to ObjectId if it looks like one, otherwise use as string
+                    let categoryIdVariants: any[] = [gridRequest.filterCategoryId];
+                    if (mongoose.Types.ObjectId.isValid(gridRequest.filterCategoryId)) {
+                        try {
+                            categoryIdVariants.push(new mongoose.Types.ObjectId(gridRequest.filterCategoryId));
+                        } catch (e) {
+                            // Keep just the string version
+                        }
+                    }
+
+                    categoryConditions.push(
+                        { categoryIds: { $in: categoryIdVariants } },
+                        { 'primaryCategory._id': { $in: categoryIdVariants } },
+                        { 'categories._id': { $in: categoryIdVariants } },
+                        { categoryId: { $in: categoryIdVariants } }
+                    );
+                }
+
+                if (gridRequest?.filterCategoryName) {
+                    const nameRegex = new RegExp(`^${gridRequest.filterCategoryName}$`, 'i');
+                    categoryConditions.push(
+                        { 'primaryCategory.name': nameRegex },
+                        { 'categories.name': nameRegex }
+                    );
+                }
+
+                if (categoryConditions.length > 0) {
+                    andConditions.push({ $or: categoryConditions });
+                }
             }
 
             // Apply user filter (for data isolation)
@@ -430,6 +462,17 @@ export class FlashcardService {
                     }
                 });
             }
+
+            // Add category and other $and conditions to matchStage
+            if (andConditions.length > 0) {
+                if (matchStage.$and) {
+                    matchStage.$and = matchStage.$and.concat(andConditions);
+                } else {
+                    matchStage.$and = andConditions;
+                }
+            }
+
+            console.log('[FLASHCARD-GRID] Final matchStage:', JSON.stringify(matchStage, null, 2));
 
             // Build sort stage
             let sortStage: any = { createdDate: -1 }; // Default sort

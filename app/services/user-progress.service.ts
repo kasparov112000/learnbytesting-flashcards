@@ -39,6 +39,23 @@ export class UserProgressService {
     }
 
     /**
+     * Get progress for a user-flashcard pair (returns null if not found)
+     */
+    async getProgress(userId: string, flashcardId: string) {
+        try {
+            const flashcardObjectId = new mongoose.Types.ObjectId(flashcardId);
+            const progress = await UserProgress.findOne({
+                userId: userId,
+                flashcardId: flashcardObjectId
+            });
+            return progress;
+        } catch (error) {
+            console.error('[UserProgressService] Error getting progress:', error);
+            return null;
+        }
+    }
+
+    /**
      * Process a review for a flashcard using FSRS or SM-2
      * @param userId - User ID
      * @param flashcardId - Flashcard ID

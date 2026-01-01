@@ -83,7 +83,7 @@ export default function (app, express, services) {
   // Get all flashcards with filtering and search (using aggregate pipeline)
   router.get('/flashcards', async (req, res) => {
     try {
-      const { category, categoryId, filterCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
+      const { category, categoryId, filterCategoryId, filterCategoryName, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
       // Build match stage for aggregate pipeline
       // Use $and to combine multiple conditions properly
@@ -95,14 +95,55 @@ export default function (app, express, services) {
       // Hierarchical category filtering - finds all cards that have this category in their ancestry
       // Supports multiple fields for backward compatibility with flashcards that may not have categoryIds populated
       if (filterCategoryId) {
-        // Use $or to match flashcards by categoryIds array OR primaryCategory._id OR categories array
+        // Try to convert to ObjectId if it looks like one, otherwise use as string
+        let categoryIdVariants: any[] = [filterCategoryId];
+
+        // Check if it's a valid ObjectId string and add ObjectId variant
+        const mongoose = require('mongoose');
+        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
+          try {
+            categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId));
+          } catch (e) {
+            // Keep just the string version
+          }
+        }
+
+        // Build comprehensive $or query to handle both string and ObjectId formats
+        // and check all possible category fields
+        const categoryConditions: any[] = [
+          // categoryIds array (main hierarchical field) - check both string and ObjectId
+          { categoryIds: { $in: categoryIdVariants } },
+          // primaryCategory._id - check both formats
+          { 'primaryCategory._id': { $in: categoryIdVariants } },
+          // categories array _id field - check both formats
+          { 'categories._id': { $in: categoryIdVariants } },
+          // Legacy categoryId field - check both formats
+          { categoryId: { $in: categoryIdVariants } }
+        ];
+
+        // If category name is provided, also match by name (fallback for legacy data)
+        if (filterCategoryName) {
+          const nameRegex = new RegExp(`^${filterCategoryName}$`, 'i');
+          categoryConditions.push(
+            { 'primaryCategory.name': nameRegex },
+            { 'categories.name': nameRegex }
+          );
+        }
+
+        andConditions.push({ $or: categoryConditions });
+
+        console.log('[Flashcards] Using categoryIdVariants:', categoryIdVariants);
+        console.log('[Flashcards] Category name filter:', filterCategoryName);
+      } else if (filterCategoryName) {
+        // Filter by category name only (no ID provided)
+        const nameRegex = new RegExp(`^${filterCategoryName}$`, 'i');
         andConditions.push({
           $or: [
-            { categoryIds: filterCategoryId },
-            { 'primaryCategory._id': filterCategoryId },
-            { 'categories._id': filterCategoryId }
+            { 'primaryCategory.name': nameRegex },
+            { 'categories.name': nameRegex }
           ]
         });
+        console.log('[Flashcards] Filtering by category name only:', filterCategoryName);
       } else if (categoryId) {
         matchStage.categoryId = categoryId;
       }
@@ -141,17 +182,44 @@ export default function (app, express, services) {
         matchStage.$and = andConditions;
       }
 
-      console.log('[Flashcards] Query params:', { filterCategoryId, search, userId, page, pageSize });
+      console.log('[Flashcards] Query params:', { filterCategoryId, filterCategoryName, search, userId, page, pageSize });
       console.log('[Flashcards] Match stage:', JSON.stringify(matchStage, null, 2));
 
       // Debug: Check if there are any flashcards with this categoryId in their categoryIds array
-      if (filterCategoryId) {
-        const testQuery = await Flashcard.countDocuments({ categoryIds: filterCategoryId, isActive: true });
-        console.log(`[Flashcards] DEBUG: Found ${testQuery} flashcards with categoryIds containing "${filterCategoryId}"`);
+      if (filterCategoryId || filterCategoryName) {
+        // Sample a few flashcards to see their category structure
+        const sampleFlashcards = await Flashcard.find({ isActive: true }).limit(3).lean();
+        console.log('[Flashcards] DEBUG: Sample flashcards category data:');
+        sampleFlashcards.forEach((fc: any, idx) => {
+          console.log(`  [${idx}] front: "${fc.front?.substring(0, 40)}..."`);
+          console.log(`      categoryIds: ${JSON.stringify(fc.categoryIds)}`);
+          console.log(`      primaryCategory: ${JSON.stringify(fc.primaryCategory)}`);
+          console.log(`      categories: ${JSON.stringify(fc.categories?.map((c: any) => ({ _id: c._id, name: c.name })))}`);
+        });
 
-        // Also check primaryCategory
-        const primaryCatQuery = await Flashcard.countDocuments({ 'primaryCategory._id': filterCategoryId, isActive: true });
-        console.log(`[Flashcards] DEBUG: Found ${primaryCatQuery} flashcards with primaryCategory._id = "${filterCategoryId}"`);
+        if (filterCategoryId) {
+          const testQuery = await Flashcard.countDocuments({ categoryIds: filterCategoryId, isActive: true });
+          console.log(`[Flashcards] DEBUG: Found ${testQuery} flashcards with categoryIds containing "${filterCategoryId}"`);
+
+          // Also check primaryCategory
+          const primaryCatQuery = await Flashcard.countDocuments({ 'primaryCategory._id': filterCategoryId, isActive: true });
+          console.log(`[Flashcards] DEBUG: Found ${primaryCatQuery} flashcards with primaryCategory._id = "${filterCategoryId}"`);
+
+          // Check categories array
+          const categoriesArrayQuery = await Flashcard.countDocuments({ 'categories._id': filterCategoryId, isActive: true });
+          console.log(`[Flashcards] DEBUG: Found ${categoriesArrayQuery} flashcards with categories._id = "${filterCategoryId}"`);
+        }
+
+        if (filterCategoryName) {
+          const nameQuery = await Flashcard.countDocuments({
+            $or: [
+              { 'primaryCategory.name': new RegExp(`^${filterCategoryName}$`, 'i') },
+              { 'categories.name': new RegExp(`^${filterCategoryName}$`, 'i') }
+            ],
+            isActive: true
+          });
+          console.log(`[Flashcards] DEBUG: Found ${nameQuery} flashcards with category name "${filterCategoryName}"`);
+        }
       }
 
       // Calculate pagination
@@ -461,6 +529,20 @@ export default function (app, express, services) {
     }
   });
 
+  // Get user's progress for a specific flashcard
+  router.get('/progress/:userId/:flashcardId', async (req, res) => {
+    try {
+      const progress = await userProgressService.getProgress(
+        req.params.userId,
+        req.params.flashcardId
+      );
+      res.json({ result: progress });
+    } catch (error: any) {
+      console.error('[Flashcards] Get card progress error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get user's statistics
   router.get('/progress/:userId/stats', async (req, res) => {
     try {
@@ -552,6 +634,42 @@ export default function (app, express, services) {
       res.json({ result: progress });
     } catch (error: any) {
       console.error('[Flashcards] Reset error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Submit FSRS review (called by frontend flashcard service)
+  router.post('/progress/:userId/submit/:flashcardId', async (req, res) => {
+    try {
+      const { rating, responseTimeMs } = req.body;
+
+      // Validate rating (FSRS uses 1-4)
+      if (!rating || rating < 1 || rating > 4) {
+        return res.status(400).json({
+          error: 'Rating must be 1 (Again), 2 (Hard), 3 (Good), or 4 (Easy)'
+        });
+      }
+
+      console.log('[Flashcards] Processing FSRS review:', {
+        userId: req.params.userId,
+        flashcardId: req.params.flashcardId,
+        rating,
+        responseTimeMs
+      });
+
+      const progress = await userProgressService.processReview(
+        req.params.userId,
+        req.params.flashcardId,
+        rating,
+        responseTimeMs
+      );
+
+      res.json({
+        result: progress,
+        message: 'Review processed successfully'
+      });
+    } catch (error: any) {
+      console.error('[Flashcards] Submit FSRS review error:', error);
       res.status(500).json({ error: error.message });
     }
   });
