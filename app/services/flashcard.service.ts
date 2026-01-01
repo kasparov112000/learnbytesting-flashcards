@@ -394,6 +394,14 @@ export class FlashcardService {
                         { 'primaryCategory.name': nameRegex },
                         { 'categories.name': nameRegex }
                     );
+
+                    // Also match composite categoryIds that end with "::CategoryName"
+                    // Escape special regex characters in the name
+                    const escapedName = gridRequest.filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
+                    categoryConditions.push(
+                        { categoryIds: compositePathRegex }
+                    );
                 }
 
                 if (categoryConditions.length > 0) {

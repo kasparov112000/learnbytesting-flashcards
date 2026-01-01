@@ -122,12 +122,22 @@ export default function (app, express, services) {
         ];
 
         // If category name is provided, also match by name (fallback for legacy data)
+        // This handles composite categoryIds like "uuid::Name1::Name2::TargetCategory"
         if (filterCategoryName) {
           const nameRegex = new RegExp(`^${filterCategoryName}$`, 'i');
           categoryConditions.push(
             { 'primaryCategory.name': nameRegex },
             { 'categories.name': nameRegex }
           );
+
+          // Also match composite categoryIds that end with "::CategoryName"
+          // Escape special regex characters in the name
+          const escapedName = filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
+          categoryConditions.push(
+            { categoryIds: compositePathRegex }
+          );
+          console.log('[Flashcards] Added composite path regex:', `::${escapedName}$`);
         }
 
         andConditions.push({ $or: categoryConditions });
@@ -137,13 +147,20 @@ export default function (app, express, services) {
       } else if (filterCategoryName) {
         // Filter by category name only (no ID provided)
         const nameRegex = new RegExp(`^${filterCategoryName}$`, 'i');
+
+        // Also match composite categoryIds that end with "::CategoryName"
+        const escapedName = filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
+
         andConditions.push({
           $or: [
             { 'primaryCategory.name': nameRegex },
-            { 'categories.name': nameRegex }
+            { 'categories.name': nameRegex },
+            { categoryIds: compositePathRegex }
           ]
         });
         console.log('[Flashcards] Filtering by category name only:', filterCategoryName);
+        console.log('[Flashcards] Added composite path regex:', `::${escapedName}$`);
       } else if (categoryId) {
         matchStage.categoryId = categoryId;
       }
@@ -219,6 +236,15 @@ export default function (app, express, services) {
             isActive: true
           });
           console.log(`[Flashcards] DEBUG: Found ${nameQuery} flashcards with category name "${filterCategoryName}"`);
+
+          // Check for composite path matches (e.g., "uuid::Name1::Name2::TargetCategory")
+          const escapedName = filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
+          const compositeQuery = await Flashcard.countDocuments({
+            categoryIds: compositePathRegex,
+            isActive: true
+          });
+          console.log(`[Flashcards] DEBUG: Found ${compositeQuery} flashcards with categoryIds ending in "::${filterCategoryName}"`);
         }
       }
 
