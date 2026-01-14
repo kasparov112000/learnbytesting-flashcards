@@ -1,7 +1,37 @@
 import { Flashcard } from '../models';
 import * as mongoose from 'mongoose';
+import { processChessData, convertLegacyToChessData, ChessData } from '../utils/chess-validation.util';
 
 export class FlashcardService {
+    /**
+     * Process chess data in a flashcard
+     * - If chessData is provided, validate and compute targetFen
+     * - If legacy fen/pgn is provided, convert to chessData format
+     */
+    private processChessFields(data: any): any {
+        // If new chessData format is provided, validate it
+        if (data.chessData && data.chessData.moves && data.chessData.moves.length > 0) {
+            const validatedChessData = processChessData(data.chessData);
+            return { ...data, chessData: validatedChessData };
+        }
+
+        // If legacy format is provided, convert to new format
+        if (data.fen || data.pgn) {
+            const chessData = convertLegacyToChessData(
+                data.fen,
+                data.pgn,
+                data.openingName,
+                data.startingFen
+            );
+
+            if (chessData) {
+                return { ...data, chessData };
+            }
+        }
+
+        return data;
+    }
+
     /**
      * Ensure categoryIds array is populated from categories
      * This denormalized field enables efficient hierarchical queries
@@ -28,7 +58,8 @@ export class FlashcardService {
      * Create a new flashcard
      */
     async create(data: any) {
-        const processedData = this.ensureCategoryIds(data);
+        let processedData = this.ensureCategoryIds(data);
+        processedData = this.processChessFields(processedData);
         const flashcard = new Flashcard(processedData);
         return await flashcard.save();
     }
@@ -37,7 +68,11 @@ export class FlashcardService {
      * Create multiple flashcards at once
      */
     async createMany(flashcards: any[]) {
-        const processedFlashcards = flashcards.map(fc => this.ensureCategoryIds(fc));
+        const processedFlashcards = flashcards.map(fc => {
+            let processed = this.ensureCategoryIds(fc);
+            processed = this.processChessFields(processed);
+            return processed;
+        });
         return await Flashcard.insertMany(processedFlashcards);
     }
 

@@ -94,7 +94,27 @@ const FlashcardSchema = new Schema({
         max: 5
     },
 
-    // Chess-specific fields
+    // Chess-specific fields - NEW STRUCTURED FORMAT (preferred)
+    chessData: {
+        // Starting position FEN (defaults to initial position if not provided)
+        startingFen: { type: String },
+        // Array of moves in SAN notation (e.g., ["e4", "e5", "Nf3"])
+        moves: [{ type: String }],
+        // Final position FEN (auto-computed by server for validation)
+        targetFen: { type: String },
+        // Board orientation for display
+        orientation: { type: String, enum: ['white', 'black'] },
+        // Which move index to start practice from (0-based)
+        practiceFromMove: { type: Number, default: 0 },
+        // Opening/variation name
+        openingName: { type: String },
+        // Validation status (set by server)
+        isValid: { type: Boolean },
+        // Validation error if invalid
+        validationError: { type: String }
+    },
+
+    // Chess-specific fields - LEGACY (for backward compatibility)
     fen: {
         type: String  // Chess position FEN if applicable
     },
