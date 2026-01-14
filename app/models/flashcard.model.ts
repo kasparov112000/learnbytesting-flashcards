@@ -133,6 +133,19 @@ const FlashcardSchema = new Schema({
         index: true
     },
 
+    // Users who have access to this flashcard (supports multi-user sharing)
+    // Array of user MongoDB _ids
+    users: [{
+        type: Schema.Types.Mixed,  // Supports both ObjectId and String formats
+        index: true
+    }],
+
+    // User's email (for quick lookup without joining)
+    userEmail: {
+        type: String,
+        index: true
+    },
+
     // Whether this is a public flashcard
     isPublic: {
         type: Boolean,
@@ -164,6 +177,8 @@ FlashcardSchema.index({ createdBy: 1, isActive: 1 });
 FlashcardSchema.index({ questionIds: 1 });
 FlashcardSchema.index({ linkedQuestionId: 1 });
 FlashcardSchema.index({ canBeQuizzed: 1, isActive: 1 });
+FlashcardSchema.index({ users: 1, isActive: 1 });  // Query flashcards by user
+FlashcardSchema.index({ userEmail: 1, isActive: 1 });  // Query flashcards by email
 
 export const Flashcard = mongoose.model('Flashcard', FlashcardSchema);
 export { FlashcardSchema };
