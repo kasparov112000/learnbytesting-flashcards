@@ -66,6 +66,28 @@ const FlashcardSchema = new Schema({
         type: String
     }],
 
+    // Hierarchical weakness tags for learning analytics
+    // Format: "weakness:type:specific" (e.g., "weakness:endgame:rook-technique")
+    weaknessTags: [{
+        type: String,
+        index: true
+    }],
+
+    // Parsed weakness tag structure (denormalized for efficient querying)
+    // Allows filtering at any level: by type, or type+specific
+    weaknessTagData: [{
+        fullTag: { type: String },           // "weakness:endgame:rook-technique"
+        type: { type: String, index: true }, // "endgame"
+        specific: { type: String },          // "rook-technique"
+        source: {
+            type: String,
+            enum: ['notebooklm', 'llm-generated', 'manual', 'imported'],
+            default: 'llm-generated'
+        },
+        confidence: { type: Number, min: 0, max: 1 }, // LLM confidence score
+        addedAt: { type: Date, default: Date.now }
+    }],
+
     // Many-to-many: References to question documents
     questionIds: [{
         type: Schema.Types.ObjectId,
@@ -199,6 +221,12 @@ FlashcardSchema.index({ linkedQuestionId: 1 });
 FlashcardSchema.index({ canBeQuizzed: 1, isActive: 1 });
 FlashcardSchema.index({ users: 1, isActive: 1 });  // Query flashcards by user
 FlashcardSchema.index({ userEmail: 1, isActive: 1 });  // Query flashcards by email
+
+// Weakness tag indexes for analytics
+FlashcardSchema.index({ weaknessTags: 1 });
+FlashcardSchema.index({ 'weaknessTagData.type': 1 });
+FlashcardSchema.index({ 'weaknessTagData.fullTag': 1 });
+FlashcardSchema.index({ createdBy: 1, weaknessTags: 1, isActive: 1 });  // User weakness queries
 
 export const Flashcard = mongoose.model('Flashcard', FlashcardSchema);
 export { FlashcardSchema };

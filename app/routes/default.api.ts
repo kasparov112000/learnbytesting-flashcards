@@ -937,6 +937,98 @@ export default function (app, express, services) {
     }
   });
 
+  // ==================== WEAKNESS TAG ANALYTICS ====================
+
+  // Get weakness tag statistics
+  // Optional query param: tagType - filter by weakness type (e.g., 'endgame', 'tactics')
+  router.get('/analytics/:userId/weakness-tags', async (req, res) => {
+    try {
+      const tagType = req.query.tagType as string | undefined;
+      const stats = await analyticsService.getWeaknessTagStats(req.params.userId, tagType);
+      res.json({ result: stats });
+    } catch (error: any) {
+      console.error('[Flashcards] Get weakness tag stats error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get aggregated weakness statistics by type
+  router.get('/analytics/:userId/weakness-types', async (req, res) => {
+    try {
+      const stats = await analyticsService.getWeaknessTypeStats(req.params.userId);
+      res.json({ result: stats });
+    } catch (error: any) {
+      console.error('[Flashcards] Get weakness type stats error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get mastery trend for a specific weakness tag
+  // Query params: days (optional, default 30)
+  router.get('/analytics/:userId/weakness-trend/:tagId', async (req, res) => {
+    try {
+      const days = parseInt(req.query.days as string || '30', 10);
+      // Decode the tagId (it may be URL encoded due to colons)
+      const tagId = decodeURIComponent(req.params.tagId);
+      const trend = await analyticsService.getWeaknessTagTrend(req.params.userId, tagId, days);
+      res.json({ result: trend });
+    } catch (error: any) {
+      console.error('[Flashcards] Get weakness tag trend error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get flashcards by weakness tag
+  // Optional query params: userId (to filter by user), limit
+  router.get('/flashcards/weakness/:tagId', async (req, res) => {
+    try {
+      const tagId = decodeURIComponent(req.params.tagId);
+      const userId = req.query.userId as string | undefined;
+      const limit = parseInt(req.query.limit as string || '50', 10);
+      const flashcards = await analyticsService.getFlashcardsByWeaknessTag(tagId, userId, limit);
+      res.json({ result: flashcards, count: flashcards.length });
+    } catch (error: any) {
+      console.error('[Flashcards] Get flashcards by weakness tag error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Start a weakness-targeted study session
+  router.post('/study/:userId/weakness/:tagId', async (req, res) => {
+    try {
+      const tagId = decodeURIComponent(req.params.tagId);
+      const userId = req.params.userId;
+
+      // Get flashcards for this weakness tag
+      const flashcards = await analyticsService.getFlashcardsByWeaknessTag(tagId, userId, 50);
+
+      if (flashcards.length === 0) {
+        return res.json({
+          result: {
+            cards: [],
+            totalCount: 0,
+            message: 'No flashcards found for this weakness tag'
+          }
+        });
+      }
+
+      // Get study cards from flashcard IDs
+      const flashcardIds = flashcards.map((f: any) => f._id);
+      const session = await studyService.getStudySessionByFlashcardIds(userId, flashcardIds);
+
+      res.json({
+        result: {
+          ...session,
+          weaknessTag: tagId,
+          message: `Study session for weakness: ${tagId}`
+        }
+      });
+    } catch (error: any) {
+      console.error('[Flashcards] Start weakness session error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ==================== STUDY SESSIONS (ANALYTICS) ====================
 
   // Start a tracked study session
@@ -969,14 +1061,15 @@ export default function (app, express, services) {
   // Record a review within a session
   router.post('/session/:sessionId/review', async (req, res) => {
     try {
-      const { quality, responseTimeMs, categoryId, categoryName, isNewCard } = req.body;
+      const { quality, responseTimeMs, categoryId, categoryName, isNewCard, weaknessTagData } = req.body;
       const result = await analyticsService.recordReview(
         req.params.sessionId,
         quality,
         responseTimeMs,
         categoryId,
         categoryName,
-        isNewCard
+        isNewCard,
+        weaknessTagData  // Array of { tagId, tagType, tagSpecific }
       );
       res.json({ result });
     } catch (error: any) {

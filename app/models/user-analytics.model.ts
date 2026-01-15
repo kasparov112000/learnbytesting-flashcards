@@ -76,6 +76,37 @@ const UserAnalyticsSchema = new Schema({
         accuracy: { type: Number, default: 0 }
     }],
 
+    // Mastery by weakness tag (for tracking improvement on specific weaknesses)
+    // Format: weakness:type:specific (e.g., "weakness:endgame:rook-technique")
+    masteryByWeaknessTag: [{
+        tagId: { type: String },              // Full tag: "weakness:endgame:rook-technique"
+        tagType: { type: String },            // "endgame"
+        tagSpecific: { type: String },        // "rook-technique"
+        displayName: { type: String },        // "Rook Technique" (human-readable)
+        cardsTotal: { type: Number, default: 0 },
+        cardsMastered: { type: Number, default: 0 },
+        cardsLearning: { type: Number, default: 0 },
+        cardsNew: { type: Number, default: 0 },
+        masteryPercent: { type: Number, default: 0 },
+        averageStability: { type: Number, default: 0 },
+        totalReviews: { type: Number, default: 0 },
+        accuracy: { type: Number, default: 0 },
+        firstSeen: { type: Date },
+        lastReviewed: { type: Date },
+        improvementRate: { type: Number, default: 0 }  // % improvement over time
+    }],
+
+    // Aggregated mastery by weakness type (e.g., all "endgame" weaknesses grouped)
+    masteryByWeaknessType: [{
+        tagType: { type: String },            // "endgame", "opening", "tactics", etc.
+        displayName: { type: String },        // "Endgame"
+        cardsTotal: { type: Number, default: 0 },
+        cardsMastered: { type: Number, default: 0 },
+        masteryPercent: { type: Number, default: 0 },
+        subTagCount: { type: Number, default: 0 },  // Number of specific tags
+        accuracy: { type: Number, default: 0 }
+    }],
+
     // Weekly activity summary (last 12 weeks)
     weeklyActivity: [{
         weekStart: { type: Date },
@@ -348,6 +379,66 @@ UserAnalyticsSchema.statics.recordSession = async function(
     analytics.lastComputedAt = new Date();
 
     await analytics.save();
+    return analytics;
+};
+
+/**
+ * Static: Update weakness tag mastery for a user
+ */
+UserAnalyticsSchema.statics.updateWeaknessTagMastery = async function(
+    userId: string,
+    tagId: string,
+    tagType: string,
+    tagSpecific: string,
+    displayName: string,
+    stats: {
+        cardsTotal: number;
+        cardsMastered: number;
+        cardsLearning: number;
+        cardsNew: number;
+        totalReviews: number;
+        correctCount: number;
+        averageStability: number;
+    }
+) {
+    const analytics = await this.getOrCreate(userId);
+
+    const existingIndex = analytics.masteryByWeaknessTag.findIndex(
+        t => t.tagId === tagId
+    );
+
+    const tagData = {
+        tagId,
+        tagType,
+        tagSpecific,
+        displayName,
+        cardsTotal: stats.cardsTotal,
+        cardsMastered: stats.cardsMastered,
+        cardsLearning: stats.cardsLearning,
+        cardsNew: stats.cardsNew,
+        masteryPercent: stats.cardsTotal > 0
+            ? Math.round((stats.cardsMastered / stats.cardsTotal) * 1000) / 10
+            : 0,
+        averageStability: stats.averageStability,
+        totalReviews: stats.totalReviews,
+        accuracy: stats.totalReviews > 0
+            ? Math.round((stats.correctCount / stats.totalReviews) * 1000) / 10
+            : 0,
+        lastReviewed: new Date()
+    };
+
+    if (existingIndex >= 0) {
+        // Preserve firstSeen date
+        tagData['firstSeen'] = analytics.masteryByWeaknessTag[existingIndex].firstSeen;
+        analytics.masteryByWeaknessTag[existingIndex] = tagData;
+    } else {
+        tagData['firstSeen'] = new Date();
+        analytics.masteryByWeaknessTag.push(tagData);
+    }
+
+    analytics.lastComputedAt = new Date();
+    await analytics.save();
+
     return analytics;
 };
 

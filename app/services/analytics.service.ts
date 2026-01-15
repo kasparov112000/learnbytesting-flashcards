@@ -490,7 +490,8 @@ export class AnalyticsService {
         responseTimeMs: number,
         categoryId?: string,
         categoryName?: string,
-        isNewCard: boolean = false
+        isNewCard: boolean = false,
+        weaknessTagData?: Array<{ tagId: string; tagType: string; tagSpecific: string }>
     ) {
         // Update session
         const session = await StudySession.findById(sessionId);
@@ -503,7 +504,7 @@ export class AnalyticsService {
         const userId = session?.userId;
         if (userId) {
             const dailyActivity = await (DailyActivity as any).getOrCreateToday(userId);
-            (dailyActivity as any).recordReview(quality, responseTimeMs, categoryId, categoryName, isNewCard);
+            (dailyActivity as any).recordReview(quality, responseTimeMs, categoryId, categoryName, isNewCard, weaknessTagData);
             await dailyActivity.save();
         }
 
@@ -595,6 +596,242 @@ export class AnalyticsService {
     }
 
     /**
+     * Get weakness tag statistics for a user
+     * @param userId User ID
+     * @param tagType Optional filter by weakness type (e.g., 'endgame', 'tactics')
+     */
+    async getWeaknessTagStats(userId: string, tagType?: string) {
+        // Build match query for flashcards with weakness tags
+        const flashcardMatch: any = {
+            weaknessTags: { $exists: true, $ne: [] },
+            isActive: { $ne: false }
+        };
+
+        // Get all flashcards with weakness tags for this user's progress
+        const flashcardsWithTags = await Flashcard.find(flashcardMatch, {
+            _id: 1,
+            weaknessTags: 1,
+            weaknessTagData: 1
+        }).lean();
+
+        const flashcardIds = flashcardsWithTags.map((f: any) => f._id);
+
+        // Get user progress for these flashcards
+        const progressByTag = await UserProgress.aggregate([
+            {
+                $match: {
+                    userId,
+                    flashcardId: { $in: flashcardIds }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'flashcards',
+                    localField: 'flashcardId',
+                    foreignField: '_id',
+                    as: 'flashcard'
+                }
+            },
+            { $unwind: '$flashcard' },
+            { $unwind: '$flashcard.weaknessTagData' },
+            ...(tagType ? [{ $match: { 'flashcard.weaknessTagData.type': tagType } }] : []),
+            {
+                $group: {
+                    _id: '$flashcard.weaknessTagData.fullTag',
+                    tagType: { $first: '$flashcard.weaknessTagData.type' },
+                    tagSpecific: { $first: '$flashcard.weaknessTagData.specific' },
+                    cardsTotal: { $sum: 1 },
+                    cardsMastered: {
+                        $sum: { $cond: [{ $gte: ['$stability', 21] }, 1, 0] }
+                    },
+                    cardsLearning: {
+                        $sum: {
+                            $cond: [
+                                { $and: [{ $gt: ['$stability', 0] }, { $lt: ['$stability', 21] }] },
+                                1,
+                                0
+                            ]
+                        }
+                    },
+                    cardsNew: {
+                        $sum: { $cond: [{ $eq: ['$fsrsState', 0] }, 1, 0] }
+                    },
+                    totalReviews: { $sum: '$totalReviews' },
+                    correctCount: { $sum: '$correctCount' },
+                    avgStability: { $avg: '$stability' },
+                    firstSeen: { $min: '$createdAt' },
+                    lastReviewed: { $max: '$lastReviewDate' }
+                }
+            },
+            { $sort: { cardsTotal: -1 } }
+        ]);
+
+        // Format the results
+        return progressByTag.map(tag => ({
+            tagId: tag._id,
+            tagType: tag.tagType,
+            tagSpecific: tag.tagSpecific,
+            displayName: this.formatDisplayName(tag.tagSpecific),
+            cardsTotal: tag.cardsTotal,
+            cardsMastered: tag.cardsMastered,
+            cardsLearning: tag.cardsLearning,
+            cardsNew: tag.cardsNew,
+            masteryPercent: tag.cardsTotal > 0
+                ? Math.round((tag.cardsMastered / tag.cardsTotal) * 1000) / 10
+                : 0,
+            accuracy: tag.totalReviews > 0
+                ? Math.round((tag.correctCount / tag.totalReviews) * 1000) / 10
+                : 0,
+            averageStability: Math.round((tag.avgStability || 0) * 10) / 10,
+            totalReviews: tag.totalReviews,
+            firstSeen: tag.firstSeen,
+            lastReviewed: tag.lastReviewed
+        }));
+    }
+
+    /**
+     * Get aggregated weakness statistics by type
+     * @param userId User ID
+     */
+    async getWeaknessTypeStats(userId: string) {
+        // Get all tag stats first
+        const allTagStats = await this.getWeaknessTagStats(userId);
+
+        // Aggregate by type
+        const typeMap = new Map<string, {
+            cardsTotal: number;
+            cardsMastered: number;
+            cardsLearning: number;
+            cardsNew: number;
+            totalReviews: number;
+            correctCount: number;
+            subTags: string[];
+        }>();
+
+        for (const tag of allTagStats) {
+            const existing = typeMap.get(tag.tagType) || {
+                cardsTotal: 0,
+                cardsMastered: 0,
+                cardsLearning: 0,
+                cardsNew: 0,
+                totalReviews: 0,
+                correctCount: 0,
+                subTags: []
+            };
+
+            existing.cardsTotal += tag.cardsTotal;
+            existing.cardsMastered += tag.cardsMastered;
+            existing.cardsLearning += tag.cardsLearning;
+            existing.cardsNew += tag.cardsNew;
+            existing.totalReviews += tag.totalReviews;
+            existing.correctCount += (tag.accuracy * tag.totalReviews) / 100;
+            existing.subTags.push(tag.tagId);
+
+            typeMap.set(tag.tagType, existing);
+        }
+
+        // Format results
+        const result: any[] = [];
+        for (const [tagType, data] of typeMap.entries()) {
+            result.push({
+                tagType,
+                displayName: this.formatDisplayName(tagType),
+                cardsTotal: data.cardsTotal,
+                cardsMastered: data.cardsMastered,
+                masteryPercent: data.cardsTotal > 0
+                    ? Math.round((data.cardsMastered / data.cardsTotal) * 1000) / 10
+                    : 0,
+                accuracy: data.totalReviews > 0
+                    ? Math.round((data.correctCount / data.totalReviews) * 1000) / 10
+                    : 0,
+                subTagCount: data.subTags.length
+            });
+        }
+
+        return result.sort((a, b) => b.cardsTotal - a.cardsTotal);
+    }
+
+    /**
+     * Get mastery trend for a specific weakness tag over time
+     * @param userId User ID
+     * @param tagId Full weakness tag ID (e.g., 'weakness:endgame:rook-technique')
+     * @param days Number of days to include
+     */
+    async getWeaknessTagTrend(userId: string, tagId: string, days: number = 30) {
+        const endDate = new Date();
+        endDate.setUTCHours(23, 59, 59, 999);
+
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+        startDate.setUTCHours(0, 0, 0, 0);
+
+        // Get daily activity with weakness tag tracking
+        const activities = await DailyActivity.find({
+            userId,
+            date: { $gte: startDate, $lte: endDate },
+            'weaknessTags.tagId': tagId
+        }).sort({ date: 1 });
+
+        const trend: {
+            date: string;
+            cardsReviewed: number;
+            correctCount: number;
+            accuracy: number;
+            studyTimeMinutes: number;
+        }[] = [];
+
+        for (const activity of activities) {
+            const tagData = (activity as any).weaknessTags?.find(
+                (t: any) => t.tagId === tagId
+            );
+
+            if (tagData) {
+                const accuracy = tagData.count > 0
+                    ? Math.round((tagData.correctCount / tagData.count) * 1000) / 10
+                    : 0;
+
+                trend.push({
+                    date: (activity.date as Date).toISOString().split('T')[0],
+                    cardsReviewed: tagData.count,
+                    correctCount: tagData.correctCount,
+                    accuracy,
+                    studyTimeMinutes: Math.round((tagData.studyTimeMs || 0) / 60000)
+                });
+            }
+        }
+
+        return trend;
+    }
+
+    /**
+     * Get flashcards by weakness tag
+     * @param tagId Full weakness tag ID
+     * @param userId Optional user ID to filter by user's flashcards
+     * @param limit Max number of flashcards to return
+     */
+    async getFlashcardsByWeaknessTag(tagId: string, userId?: string, limit: number = 50) {
+        const query: any = {
+            weaknessTags: tagId,
+            isActive: { $ne: false }
+        };
+
+        if (userId) {
+            query.$or = [
+                { users: userId },
+                { createdBy: userId },
+                { userEmail: userId }
+            ];
+        }
+
+        const flashcards = await Flashcard.find(query)
+            .limit(limit)
+            .sort({ createdAt: -1 })
+            .lean();
+
+        return flashcards;
+    }
+
+    /**
      * Recalculate and cache all analytics for a user
      */
     async recalculateAnalytics(userId: string) {
@@ -635,6 +872,14 @@ export class AnalyticsService {
         const categoryStats = await this.getCategoryStats(userId);
         analytics.masteryByCategory = categoryStats;
 
+        // Update weakness tag mastery
+        const weaknessTagStats = await this.getWeaknessTagStats(userId);
+        analytics.masteryByWeaknessTag = weaknessTagStats;
+
+        // Update weakness type mastery (aggregated)
+        const weaknessTypeStats = await this.getWeaknessTypeStats(userId);
+        analytics.masteryByWeaknessType = weaknessTypeStats;
+
         analytics.lastComputedAt = new Date();
         await analytics.save();
 
@@ -647,5 +892,17 @@ export class AnalyticsService {
         return date.getUTCFullYear() === today.getUTCFullYear() &&
                date.getUTCMonth() === today.getUTCMonth() &&
                date.getUTCDate() === today.getUTCDate();
+    }
+
+    /**
+     * Convert kebab-case to Title Case for display
+     * e.g., 'rook-endgame-technique' -> 'Rook Endgame Technique'
+     */
+    private formatDisplayName(kebabCase: string): string {
+        if (!kebabCase) return '';
+        return kebabCase
+            .split('-')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
     }
 }

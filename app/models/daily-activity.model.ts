@@ -84,6 +84,16 @@ const DailyActivitySchema = new Schema({
         count: { type: Number, default: 0 }
     }],
 
+    // Weakness tags studied with counts (for tracking improvement over time)
+    weaknessTags: [{
+        tagId: { type: String },           // Full tag: "weakness:endgame:rook-technique"
+        tagType: { type: String },         // Type: "endgame"
+        tagSpecific: { type: String },     // Specific: "rook-technique"
+        count: { type: Number, default: 0 },
+        correctCount: { type: Number, default: 0 },
+        studyTimeMs: { type: Number, default: 0 }
+    }],
+
     // Goal tracking (optional)
     dailyGoal: {
         type: Number,
@@ -136,7 +146,8 @@ DailyActivitySchema.methods.recordReview = function(
     responseTimeMs: number,
     categoryId?: string,
     categoryName?: string,
-    isNewCard?: boolean
+    isNewCard?: boolean,
+    weaknessTagData?: Array<{ tagId: string; tagType: string; tagSpecific: string }>
 ) {
     this.cardsReviewed++;
 
@@ -175,6 +186,27 @@ DailyActivitySchema.methods.recordReview = function(
                 categoryName: categoryName || 'Unknown',
                 count: 1
             });
+        }
+    }
+
+    // Track weakness tags
+    if (weaknessTagData && weaknessTagData.length > 0) {
+        for (const tag of weaknessTagData) {
+            const existingTag = this.weaknessTags.find(t => t.tagId === tag.tagId);
+            if (existingTag) {
+                existingTag.count++;
+                if (quality >= 3) existingTag.correctCount++;
+                if (responseTimeMs) existingTag.studyTimeMs += responseTimeMs;
+            } else {
+                this.weaknessTags.push({
+                    tagId: tag.tagId,
+                    tagType: tag.tagType,
+                    tagSpecific: tag.tagSpecific,
+                    count: 1,
+                    correctCount: quality >= 3 ? 1 : 0,
+                    studyTimeMs: responseTimeMs || 0
+                });
+            }
         }
     }
 
