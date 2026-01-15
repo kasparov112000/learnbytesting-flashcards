@@ -61,6 +61,20 @@ export default function (app, express, services) {
       // Auto-set environment for all flashcards
       const flashcardsWithEnv = (requestBody.flashcards || []).map(fc => ({ ...fc, environment: ENV_NAME }));
       const flashcards = await flashcardService.createMany(flashcardsWithEnv);
+
+      // If any flashcards have weakness tags, sync the weakness profile to the user
+      const hasWeaknessTags = flashcards.some(fc => fc.weaknessTags && fc.weaknessTags.length > 0);
+      if (hasWeaknessTags && flashcards.length > 0) {
+        const userId = flashcards[0].users?.[0] || flashcards[0].createdBy;
+        if (userId) {
+          console.log('[Flashcards] Weakness tags detected, triggering analytics sync for user:', userId);
+          // Run async - don't block the response
+          analyticsService.recalculateAnalytics(userId.toString()).catch(err => {
+            console.error('[Flashcards] Failed to sync weakness profile:', err.message);
+          });
+        }
+      }
+
       res.status(201).json({ result: flashcards, count: flashcards.length });
     } catch (error: any) {
       console.error('[Flashcards] Batch create error:', error);

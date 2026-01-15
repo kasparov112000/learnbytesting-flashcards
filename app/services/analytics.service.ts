@@ -2,6 +2,8 @@ import { StudySession } from '../models/study-session.model';
 import { DailyActivity } from '../models/daily-activity.model';
 import { UserAnalytics } from '../models/user-analytics.model';
 import { UserProgress, Flashcard } from '../models';
+import axios from 'axios';
+import mongoose from 'mongoose';
 
 /**
  * AnalyticsService - Handles all analytics calculations and data aggregation
@@ -601,66 +603,82 @@ export class AnalyticsService {
      * @param tagType Optional filter by weakness type (e.g., 'endgame', 'tactics')
      */
     async getWeaknessTagStats(userId: string, tagType?: string) {
-        // Build match query for flashcards with weakness tags
+        // Build match query for flashcards with weakness tags belonging to this user
         const flashcardMatch: any = {
             weaknessTags: { $exists: true, $ne: [] },
-            isActive: { $ne: false }
+            weaknessTagData: { $exists: true, $ne: [] },
+            isActive: { $ne: false },
+            $or: [
+                { users: userId },
+                { createdBy: userId }
+            ]
         };
 
-        // Get all flashcards with weakness tags for this user's progress
-        const flashcardsWithTags = await Flashcard.find(flashcardMatch, {
-            _id: 1,
-            weaknessTags: 1,
-            weaknessTagData: 1
-        }).lean();
-
-        const flashcardIds = flashcardsWithTags.map((f: any) => f._id);
-
-        // Get user progress for these flashcards
-        const progressByTag = await UserProgress.aggregate([
-            {
-                $match: {
-                    userId,
-                    flashcardId: { $in: flashcardIds }
-                }
-            },
+        // Start from Flashcard collection and LEFT JOIN to UserProgress
+        // This ensures we count flashcards even if they haven't been reviewed yet
+        const progressByTag = await Flashcard.aggregate([
+            { $match: flashcardMatch },
+            { $unwind: '$weaknessTagData' },
+            ...(tagType ? [{ $match: { 'weaknessTagData.type': tagType } }] : []),
             {
                 $lookup: {
-                    from: 'flashcards',
-                    localField: 'flashcardId',
-                    foreignField: '_id',
-                    as: 'flashcard'
+                    from: 'userprogresses',
+                    let: { flashcardId: '$_id' },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $and: [
+                                        { $eq: ['$flashcardId', '$$flashcardId'] },
+                                        { $eq: ['$userId', userId] }
+                                    ]
+                                }
+                            }
+                        }
+                    ],
+                    as: 'progress'
                 }
             },
-            { $unwind: '$flashcard' },
-            { $unwind: '$flashcard.weaknessTagData' },
-            ...(tagType ? [{ $match: { 'flashcard.weaknessTagData.type': tagType } }] : []),
+            {
+                $addFields: {
+                    progressData: { $arrayElemAt: ['$progress', 0] }
+                }
+            },
             {
                 $group: {
-                    _id: '$flashcard.weaknessTagData.fullTag',
-                    tagType: { $first: '$flashcard.weaknessTagData.type' },
-                    tagSpecific: { $first: '$flashcard.weaknessTagData.specific' },
+                    _id: '$weaknessTagData.fullTag',
+                    tagType: { $first: '$weaknessTagData.type' },
+                    tagSpecific: { $first: '$weaknessTagData.specific' },
                     cardsTotal: { $sum: 1 },
                     cardsMastered: {
-                        $sum: { $cond: [{ $gte: ['$stability', 21] }, 1, 0] }
+                        $sum: { $cond: [{ $gte: ['$progressData.stability', 21] }, 1, 0] }
                     },
                     cardsLearning: {
                         $sum: {
                             $cond: [
-                                { $and: [{ $gt: ['$stability', 0] }, { $lt: ['$stability', 21] }] },
+                                { $and: [{ $gt: ['$progressData.stability', 0] }, { $lt: ['$progressData.stability', 21] }] },
                                 1,
                                 0
                             ]
                         }
                     },
                     cardsNew: {
-                        $sum: { $cond: [{ $eq: ['$fsrsState', 0] }, 1, 0] }
+                        $sum: {
+                            $cond: [
+                                { $or: [
+                                    { $eq: ['$progressData', null] },
+                                    { $eq: ['$progressData.fsrsState', 0] }
+                                ]},
+                                1,
+                                0
+                            ]
+                        }
                     },
-                    totalReviews: { $sum: '$totalReviews' },
-                    correctCount: { $sum: '$correctCount' },
-                    avgStability: { $avg: '$stability' },
+                    totalReviews: { $sum: { $ifNull: ['$progressData.totalReviews', 0] } },
+                    correctCount: { $sum: { $ifNull: ['$progressData.correctCount', 0] } },
+                    avgStability: { $avg: { $ifNull: ['$progressData.stability', 0] } },
                     firstSeen: { $min: '$createdAt' },
-                    lastReviewed: { $max: '$lastReviewDate' }
+                    lastReviewed: { $max: '$progressData.lastReviewDate' }
                 }
             },
             { $sort: { cardsTotal: -1 } }
@@ -874,16 +892,115 @@ export class AnalyticsService {
 
         // Update weakness tag mastery
         const weaknessTagStats = await this.getWeaknessTagStats(userId);
+        console.log('[AnalyticsService] Weakness tag stats:', JSON.stringify(weaknessTagStats, null, 2));
         analytics.masteryByWeaknessTag = weaknessTagStats;
 
         // Update weakness type mastery (aggregated)
         const weaknessTypeStats = await this.getWeaknessTypeStats(userId);
+        console.log('[AnalyticsService] Weakness type stats:', JSON.stringify(weaknessTypeStats, null, 2));
         analytics.masteryByWeaknessType = weaknessTypeStats;
 
         analytics.lastComputedAt = new Date();
-        await analytics.save();
+        const savedAnalytics = await analytics.save();
+        console.log('[AnalyticsService] Saved analytics masteryByWeaknessTag:', savedAnalytics.masteryByWeaknessTag?.length || 0);
 
-        return analytics;
+        // Sync weakness profile to users microservice for easy LLM access
+        await this.syncWeaknessProfileToUser(userId, weaknessTagStats, weaknessTypeStats);
+
+        return savedAnalytics;
+    }
+
+    /**
+     * Sync weakness profile to users microservice
+     * This denormalizes the weakness data to the user document for easy access
+     * when generating new flashcards (LLM needs to know existing weaknesses)
+     */
+    async syncWeaknessProfileToUser(
+        userId: string,
+        tagStats: any[],
+        typeStats: any[]
+    ): Promise<void> {
+        console.log(`[AnalyticsService] syncWeaknessProfileToUser called with userId: ${userId}, tags: ${tagStats.length}, types: ${typeStats.length}`);
+        try {
+            // Get users service URL
+            const envName = process.env.ENV_NAME || 'LOCAL';
+            const usersServiceUrl = envName !== 'LOCAL'
+                ? 'http://orchestrator-helm.default.svc.cluster.local:8080'
+                : 'http://localhost:8080';
+
+            // First, find a flashcard with this userId AND userEmail to get the userEmail
+            console.log(`[AnalyticsService] Looking for flashcard with userId: ${userId}`);
+
+            // Query for flashcard that has both the userId and a userEmail
+            const flashcard = await Flashcard.findOne({
+                userEmail: { $exists: true, $ne: null, $ne: '' },
+                $or: [
+                    { createdBy: userId },
+                    { users: userId }
+                ]
+            }, { userEmail: 1, createdBy: 1, users: 1 }).lean();
+
+            if (!flashcard || !flashcard.userEmail) {
+                console.log(`[AnalyticsService] No flashcard with email found for userId ${userId}, skipping sync`);
+                return;
+            }
+            console.log(`[AnalyticsService] Found flashcard with email: ${flashcard.userEmail}`);
+
+            // Get the user from users service by email to get the correct _id
+            const userResponse = await axios.get(`${usersServiceUrl}/api/users`, {
+                params: { email: flashcard.userEmail },
+                timeout: 10000
+            });
+
+            if (!userResponse.data || !userResponse.data._id) {
+                console.log(`[AnalyticsService] User not found by email ${flashcard.userEmail}, skipping sync`);
+                return;
+            }
+
+            const usersServiceUserId = userResponse.data._id;
+
+            // Format tags for the user profile
+            const tags = tagStats.map(tag => ({
+                tagId: tag.tagId,
+                tagType: tag.tagType,
+                tagSpecific: tag.tagSpecific,
+                displayName: tag.displayName || this.formatDisplayName(tag.tagSpecific),
+                cardsTotal: tag.cardsTotal,
+                cardsMastered: tag.cardsMastered,
+                masteryPercent: tag.masteryPercent,
+                accuracy: tag.accuracy,
+                lastReviewedAt: tag.lastReviewedAt || new Date()
+            }));
+
+            // Format type aggregations
+            const byType = typeStats.map(type => ({
+                type: type.tagType,
+                displayName: type.displayName || this.formatDisplayName(type.tagType),
+                totalTags: type.subTagCount,
+                avgMastery: type.masteryPercent
+            }));
+
+            console.log(`[AnalyticsService] Syncing weakness profile for ${flashcard.userEmail} (users svc ID: ${usersServiceUserId})`);
+            console.log(`[AnalyticsService] Tags: ${tags.length}, Types: ${byType.length}`);
+
+            // Call users microservice to update weakness profile using the correct ID
+            await axios.put(`${usersServiceUrl}/api/users/${usersServiceUserId}/weakness-profile`, {
+                tags,
+                byType
+            }, {
+                timeout: 10000,
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            console.log(`[AnalyticsService] Weakness profile synced successfully for ${flashcard.userEmail}`);
+        } catch (error: any) {
+            // Log but don't fail - this is a background sync
+            console.error(`[AnalyticsService] Failed to sync weakness profile to user:`, error.message);
+            if (error.response) {
+                console.error(`[AnalyticsService] Response status:`, error.response.status);
+                console.error(`[AnalyticsService] Response data:`, JSON.stringify(error.response.data));
+            }
+        }
     }
 
     // Helper methods
