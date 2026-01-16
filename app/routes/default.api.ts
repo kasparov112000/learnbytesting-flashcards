@@ -2,6 +2,7 @@ import { DbService } from '../services/db.service';
 import { Flashcard } from '../models';
 import { FSRSService } from '../services/fsrs.service';
 import { AnalyticsService } from '../services/analytics.service';
+import axios from 'axios';
 
 // Get current environment for flashcard creation
 const ENV_NAME = process.env.ENV_NAME || 'LOCAL';
@@ -681,7 +682,7 @@ export default function (app, express, services) {
   // Submit FSRS review (called by frontend flashcard service)
   router.post('/progress/:userId/submit/:flashcardId', async (req, res) => {
     try {
-      const { rating, responseTimeMs } = req.body;
+      const { rating, responseTimeMs, userEmail } = req.body;
 
       // Validate rating (FSRS uses 1-4)
       if (!rating || rating < 1 || rating > 4) {
@@ -694,7 +695,8 @@ export default function (app, express, services) {
         userId: req.params.userId,
         flashcardId: req.params.flashcardId,
         rating,
-        responseTimeMs
+        responseTimeMs,
+        userEmail
       });
 
       const progress = await userProgressService.processReview(
@@ -703,6 +705,35 @@ export default function (app, express, services) {
         rating,
         responseTimeMs
       );
+
+      // Send to Qdrant for RAG analytics (async, non-blocking)
+      if (userEmail) {
+        const QDRANT_WEBHOOK_URL = process.env.QDRANT_WEBHOOK_URL || 'https://n8n.learnbytesting.ai/webhook/save-practice-qdrant';
+        const flashcard = await Flashcard.findById(req.params.flashcardId).populate('categoryId');
+        const payload = {
+          user_email: userEmail,
+          flashcard_id: req.params.flashcardId,
+          rating: rating,
+          response_time_ms: responseTimeMs || 0,
+          flashcard_front: (flashcard as any)?.front || '',
+          flashcard_back: (flashcard as any)?.back || '',
+          weakness_tags: (flashcard as any)?.weaknessTags || [],
+          difficulty: (flashcard as any)?.difficulty || 3,
+          category_name: (flashcard as any)?.categoryId?.name || (flashcard as any)?.category || 'Unknown',
+          stability: (progress as any)?.stability || 0,
+          new_stability: (progress as any)?.stability || 0,
+          repetitions: (progress as any)?.repetitions || (progress as any)?.totalReviews || 0
+        };
+
+        axios.post(QDRANT_WEBHOOK_URL, payload, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 5000
+        }).then(() => {
+          console.log(`[Flashcards] Practice evaluation saved to Qdrant for user ${userEmail}`);
+        }).catch((err) => {
+          console.error(`[Flashcards] Failed to save to Qdrant: ${err.message}`);
+        });
+      }
 
       res.json({
         result: progress,
@@ -765,7 +796,7 @@ export default function (app, express, services) {
   // Submit answer - supports both FSRS (rating 1-4) and legacy SM-2 (quality 0-5)
   router.post('/study/:userId/answer/:flashcardId', async (req, res) => {
     try {
-      const { rating, quality, responseTimeMs, useLegacyQuality } = req.body;
+      const { rating, quality, responseTimeMs, useLegacyQuality, userEmail } = req.body;
 
       // Determine which rating system to use
       let fsrsRating: number;
@@ -799,7 +830,8 @@ export default function (app, express, services) {
         req.params.flashcardId,
         fsrsRating,
         responseTimeMs,
-        isLegacy || useLegacyQuality
+        isLegacy || useLegacyQuality,
+        userEmail  // Pass userEmail for Qdrant analytics
       );
       res.json({ result });
     } catch (error: any) {

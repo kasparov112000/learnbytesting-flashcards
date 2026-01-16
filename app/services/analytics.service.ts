@@ -604,13 +604,15 @@ export class AnalyticsService {
      */
     async getWeaknessTagStats(userId: string, tagType?: string) {
         // Build match query for flashcards with weakness tags belonging to this user
+        // Note: userId can be email or MongoDB ObjectId, so check all user fields
         const flashcardMatch: any = {
             weaknessTags: { $exists: true, $ne: [] },
             weaknessTagData: { $exists: true, $ne: [] },
             isActive: { $ne: false },
             $or: [
                 { users: userId },
-                { createdBy: userId }
+                { createdBy: userId },
+                { userEmail: userId }  // Also check userEmail field (for email-based lookups)
             ]
         };
 

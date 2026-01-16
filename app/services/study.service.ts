@@ -1,6 +1,10 @@
 import { FlashcardService } from './flashcard.service';
 import { UserProgressService } from './user-progress.service';
-import { UserProgress } from '../models';
+import { UserProgress, Flashcard } from '../models';
+import axios from 'axios';
+
+// Qdrant webhook URL - uses internal K8s service or n8n webhook
+const QDRANT_WEBHOOK_URL = process.env.QDRANT_WEBHOOK_URL || 'https://n8n.learnbytesting.ai/webhook/save-practice-qdrant';
 
 /**
  * Study session configuration
@@ -110,13 +114,15 @@ export class StudyService {
      * @param rating - FSRS rating (1-4) or legacy quality (0-5 if useLegacyQuality=true)
      * @param responseTimeMs - Time taken to respond in milliseconds
      * @param useLegacyQuality - If true, treat rating as SM-2 quality (0-5) and convert to FSRS
+     * @param userEmail - Optional user email for Qdrant analytics
      */
     async submitAnswer(
         userId: string,
         flashcardId: string,
         rating: number,
         responseTimeMs?: number,
-        useLegacyQuality: boolean = false
+        useLegacyQuality: boolean = false,
+        userEmail?: string
     ) {
         // Process the review
         const progress = await this.userProgressService.processReview(
@@ -126,6 +132,16 @@ export class StudyService {
             responseTimeMs,
             useLegacyQuality
         );
+
+        // Send to Qdrant for RAG analytics (async, non-blocking)
+        if (userEmail) {
+            try {
+                const flashcard = await Flashcard.findById(flashcardId).populate('categoryId');
+                this.sendToQdrant(userEmail, flashcardId, rating, responseTimeMs || 0, progress, flashcard);
+            } catch (err) {
+                console.error('[StudyService] Error fetching flashcard for Qdrant:', err);
+            }
+        }
 
         // Get the next card
         const session = await this.getStudySession(userId, {
@@ -139,6 +155,47 @@ export class StudyService {
             remainingCards: session.cards.length,
             stats: session.stats
         };
+    }
+
+    /**
+     * Send practice evaluation to Qdrant for RAG analytics (async, non-blocking)
+     */
+    private async sendToQdrant(
+        userEmail: string,
+        flashcardId: string,
+        rating: number,
+        responseTimeMs: number,
+        progress: any,
+        flashcard: any
+    ): Promise<void> {
+        try {
+            const payload = {
+                user_email: userEmail,
+                flashcard_id: flashcardId,
+                rating: rating,
+                response_time_ms: responseTimeMs || 0,
+                flashcard_front: flashcard?.front || '',
+                flashcard_back: flashcard?.back || '',
+                weakness_tags: flashcard?.weaknessTags || [],
+                difficulty: flashcard?.difficulty || 3,
+                category_name: flashcard?.categoryId?.name || flashcard?.category || 'Unknown',
+                stability: progress?.stability || 0,
+                new_stability: progress?.stability || 0,
+                repetitions: progress?.repetitions || progress?.totalReviews || 0
+            };
+
+            // Fire and forget - don't wait for response
+            axios.post(QDRANT_WEBHOOK_URL, payload, {
+                headers: { 'Content-Type': 'application/json' },
+                timeout: 5000
+            }).then(() => {
+                console.log(`[StudyService] Practice evaluation saved to Qdrant for user ${userEmail}`);
+            }).catch((err) => {
+                console.error(`[StudyService] Failed to save to Qdrant: ${err.message}`);
+            });
+        } catch (error) {
+            console.error('[StudyService] Error preparing Qdrant payload:', error);
+        }
     }
 
     /**
