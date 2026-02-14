@@ -158,6 +158,16 @@ const FlashcardSchema = new Schema({
         type: String  // URL to image for back
     },
 
+    // Original multiple choice options (for future quiz generation)
+    options: [{
+        type: String
+    }],
+
+    // Wrong answers only (for quick quiz generation without re-parsing)
+    wrongAnswers: [{
+        type: String
+    }],
+
     // Source information
     sourceType: {
         type: String,

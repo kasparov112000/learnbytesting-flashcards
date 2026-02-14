@@ -424,15 +424,25 @@ export class FlashcardService {
         let isNew = false;
 
         if (!flashcard) {
-            // Build back content: correct answer + explanation
-            const correctOption = question.options.find(o => o.charAt(0) === question.correctAnswer) || question.correctAnswer;
-            const backContent = `**${correctOption}**\n\n${question.explanation}`;
+            // Extract correct answer text (strip letter prefix like "a) " or "A) ")
+            const correctOption = question.options.find(o => o.charAt(0).toLowerCase() === question.correctAnswer.toLowerCase()) || question.correctAnswer;
+            const correctAnswerText = correctOption.replace(/^[a-dA-D]\)\s*/, '').trim();
+
+            // Build back content: clean correct answer + explanation
+            const backContent = `${correctAnswerText}\n\n${question.explanation}`;
             const hint = question.explanation ? question.explanation.split('.')[0] + '.' : undefined;
+
+            // Separate wrong answers for future multiple choice quiz generation
+            const wrongAnswers = question.options
+                .filter(o => o.charAt(0).toLowerCase() !== question.correctAnswer.toLowerCase())
+                .map(o => o.replace(/^[a-dA-D]\)\s*/, '').trim());
 
             const flashcardData: any = {
                 front: question.question,
                 back: backContent,
                 hint,
+                options: question.options,
+                wrongAnswers,
                 difficulty: 3,
                 chessData: {
                     startingFen: chessContext.fen,
