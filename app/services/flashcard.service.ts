@@ -385,6 +385,90 @@ export class FlashcardService {
 
 
     /**
+     * Create a flashcard from a question answer and record an FSRS review.
+     * - Finds existing flashcard by FEN + front text to avoid duplicates
+     * - Creates new flashcard if not found, assigns to user
+     * - Submits FSRS review: correct → rating 3 (Good), incorrect → rating 1 (Again)
+     * Returns { flashcard, progress, isNew }
+     */
+    async createFromQuestion(data: {
+        userId: string;
+        userEmail: string;
+        isCorrect: boolean;
+        question: {
+            question: string;
+            options: string[];
+            correctAnswer: string;
+            explanation: string;
+            suggestedMove?: string;
+        };
+        chessContext: {
+            fen: string;
+            moveHistory?: string[];
+            openingName?: string;
+            playerColor?: string;
+        };
+        questionType?: string;
+    }, userProgressService: any) {
+        const { userId, userEmail, isCorrect, question, chessContext, questionType } = data;
+
+        // 1. Check for existing flashcard (same FEN + same question text)
+        let flashcard = await Flashcard.findOne({
+            'chessData.startingFen': chessContext.fen,
+            front: question.question,
+            isActive: true
+        });
+
+        let isNew = false;
+
+        if (!flashcard) {
+            // Build back content: correct answer + explanation
+            const correctOption = question.options.find(o => o.charAt(0) === question.correctAnswer) || question.correctAnswer;
+            const backContent = `**${correctOption}**\n\n${question.explanation}`;
+            const hint = question.explanation ? question.explanation.split('.')[0] + '.' : undefined;
+
+            const flashcardData: any = {
+                front: question.question,
+                back: backContent,
+                hint,
+                difficulty: 3,
+                chessData: {
+                    startingFen: chessContext.fen,
+                    moves: chessContext.moveHistory || [],
+                    openingName: chessContext.openingName,
+                    orientation: chessContext.playerColor || 'white',
+                },
+                fen: chessContext.fen,
+                openingName: chessContext.openingName,
+                tags: ['chess', 'interactive-play', questionType].filter(Boolean),
+                sourceType: 'ai-generated',
+                canBeQuizzed: true,
+                createdBy: userId,
+                userEmail,
+                users: [userId],
+                environment: process.env.ENV_NAME || 'LOCAL',
+            };
+
+            let processed = this.ensureCategoryIds(flashcardData);
+            processed = this.processChessFields(processed);
+            flashcard = await new Flashcard(processed).save();
+            isNew = true;
+        } else {
+            // Ensure user is in the users array
+            const userExists = flashcard.users?.some(u => u?.toString() === userId);
+            if (!userExists) {
+                await Flashcard.findByIdAndUpdate(flashcard._id, { $addToSet: { users: userId } });
+            }
+        }
+
+        // 2. Submit FSRS review: correct → 3 (Good), incorrect → 1 (Again)
+        const rating = isCorrect ? 3 : 1;
+        const progress = await userProgressService.processReview(userId, flashcard._id.toString(), rating);
+
+        return { flashcard, progress, isNew };
+    }
+
+    /**
      * Get flashcards for ag-grid with server-side pagination using aggregate pipeline
      * Similar to auditlogs getGrid implementation
      */

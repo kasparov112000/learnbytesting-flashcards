@@ -28,6 +28,29 @@ export default function (app, express, services) {
     res.status(status.OK).json({ message: 'pong from flashcards' });
   });
 
+  // ==================== FLASHCARD FROM QUESTION ====================
+
+  // Create flashcard from a question answer + record FSRS review
+  router.post('/flashcards/from-question', async (req, res) => {
+    try {
+      const { userId, userEmail, isCorrect, question, chessContext, questionType } = req.body;
+
+      if (!userId || !question || !chessContext?.fen) {
+        return res.status(400).json({ error: 'Missing required fields: userId, question, chessContext.fen' });
+      }
+
+      const result = await flashcardService.createFromQuestion(
+        { userId, userEmail, isCorrect, question, chessContext, questionType },
+        userProgressService
+      );
+
+      res.status(result.isNew ? 201 : 200).json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Create from question error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ==================== FLASHCARD CRUD ====================
 
   // Create flashcard
