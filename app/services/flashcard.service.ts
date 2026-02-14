@@ -409,8 +409,10 @@ export class FlashcardService {
             playerColor?: string;
         };
         questionType?: string;
+        categoryId?: string;
+        categoryName?: string;
     }, userProgressService: any) {
-        const { userId, userEmail, isCorrect, question, chessContext, questionType } = data;
+        const { userId, userEmail, isCorrect, question, chessContext, questionType, categoryId, categoryName } = data;
 
         // 1. Check for existing flashcard (same FEN + same question text)
         let flashcard = await Flashcard.findOne({
@@ -441,6 +443,8 @@ export class FlashcardService {
                 fen: chessContext.fen,
                 openingName: chessContext.openingName,
                 tags: ['chess', 'interactive-play', questionType].filter(Boolean),
+                categoryIds: categoryId ? [categoryId] : [],
+                categories: categoryId ? [{ _id: categoryId, name: categoryName || 'Chess' }] : [],
                 sourceType: 'ai-generated',
                 canBeQuizzed: true,
                 createdBy: userId,
