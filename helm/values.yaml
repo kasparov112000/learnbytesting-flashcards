@@ -1,0 +1,25 @@
+replicaCount: 1
+
+image:
+  repository: kasparov112000/learnbytesting-flashcards-docker
+  pullPolicy: Always
+  tag: "latest"
+
+imagePullSecrets:
+    - name: regcred
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 3027
+
+resources: {}
+
+autoscaling:
+  enabled: false
