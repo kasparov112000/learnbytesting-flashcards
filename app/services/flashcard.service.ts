@@ -4,6 +4,50 @@ import { processChessData, convertLegacyToChessData, ChessData } from '../utils/
 
 export class FlashcardService {
     /**
+     * Infer the cardType from flashcard data if not explicitly set.
+     * Priority:
+     * 1. If cardType is already set, keep it
+     * 2. Chess data → chessPuzzle (or chessOpening if openingName is set)
+     * 3. Options/wrongAnswers → multipleChoice (or trueFalse if exactly ["True","False"])
+     * 4. Default → text
+     */
+    private inferCardType(data: any): any {
+        if (data.cardType) {
+            return data;
+        }
+
+        let cardType = 'text';
+
+        // Check for match content
+        if (data.matchPairs && data.matchPairs.length > 0) {
+            return { ...data, cardType: 'match' };
+        }
+
+        // Check for chess content
+        const hasChessData = (data.chessData?.moves && data.chessData.moves.length > 0) || data.pgn || data.fen;
+        if (hasChessData) {
+            const openingName = data.chessData?.openingName || data.openingName;
+            cardType = openingName ? 'chessOpening' : 'chessPuzzle';
+        }
+        // Check for multiple choice / true-false content
+        else if ((data.options && data.options.length > 0) || (data.wrongAnswers && data.wrongAnswers.length > 0)) {
+            // True/False detection: exactly 2 options that are "True" and "False"
+            if (data.options && data.options.length === 2) {
+                const sorted = data.options.map((o: string) => o.toLowerCase()).sort();
+                if (sorted[0] === 'false' && sorted[1] === 'true') {
+                    cardType = 'trueFalse';
+                } else {
+                    cardType = 'multipleChoice';
+                }
+            } else {
+                cardType = 'multipleChoice';
+            }
+        }
+
+        return { ...data, cardType };
+    }
+
+    /**
      * Process chess data in a flashcard
      * - If chessData is provided, validate and compute targetFen
      * - If legacy fen/pgn is provided, convert to chessData format
@@ -60,6 +104,7 @@ export class FlashcardService {
     async create(data: any) {
         let processedData = this.ensureCategoryIds(data);
         processedData = this.processChessFields(processedData);
+        processedData = this.inferCardType(processedData);
         const flashcard = new Flashcard(processedData);
         return await flashcard.save();
     }
@@ -71,6 +116,7 @@ export class FlashcardService {
         const processedFlashcards = flashcards.map(fc => {
             let processed = this.ensureCategoryIds(fc);
             processed = this.processChessFields(processed);
+            processed = this.inferCardType(processed);
             return processed;
         });
         return await Flashcard.insertMany(processedFlashcards);
@@ -363,7 +409,7 @@ export class FlashcardService {
             question: flashcard.front,
             answer: flashcard.back,
             explanation: flashcard.hint || '',
-            type: flashcard.fen ? 'chess' : 'flashcard',
+            type: flashcard.cardType || (flashcard.fen ? 'chess' : 'flashcard'),
             difficulty: flashcard.difficulty || 3,
             category: flashcard.category,
             categoryId: flashcard.categoryId,
@@ -465,6 +511,7 @@ export class FlashcardService {
 
             let processed = this.ensureCategoryIds(flashcardData);
             processed = this.processChessFields(processed);
+            processed = this.inferCardType(processed);
             flashcard = await new Flashcard(processed).save();
             isNew = true;
         } else {
@@ -480,6 +527,115 @@ export class FlashcardService {
         const progress = await userProgressService.processReview(userId, flashcard._id.toString(), rating);
 
         return { flashcard, progress, isNew };
+    }
+
+    /**
+     * Create flashcards from an opening line (repertoire import).
+     * One flashcard per position where the user has a move to play.
+     * Deduplicates by startingFen + userId + cardType.
+     * Initializes FSRS progress for each new card.
+     */
+    async createFromOpeningLine(data: {
+        userId: string;
+        userEmail: string;
+        positions: Array<{
+            fen: string;
+            moveHistory: string[];
+            chosenMove: string;
+            moveNumber: number;
+        }>;
+        eco: string;
+        openingName: string;
+        color: 'white' | 'black';
+        categoryId?: string;
+        categoryName?: string;
+    }, userProgressService: any) {
+        const { userId, userEmail, positions, eco, openingName, color, categoryId, categoryName } = data;
+
+        let created = 0;
+        let updated = 0;
+        const flashcardIds: string[] = [];
+
+        for (const pos of positions) {
+            // Dedup: same FEN, same user, same cardType
+            const existing = await Flashcard.findOne({
+                'chessData.startingFen': pos.fen,
+                createdBy: userId,
+                cardType: 'chessOpening',
+                isActive: true
+            });
+
+            if (existing) {
+                // Ensure user is in the users array
+                await Flashcard.findByIdAndUpdate(existing._id, { $addToSet: { users: userId } });
+                flashcardIds.push(existing._id.toString());
+                updated++;
+                continue;
+            }
+
+            const difficulty = Math.min(5, 1 + Math.floor(pos.moveNumber / 4));
+
+            const flashcardData: any = {
+                front: `What is the correct move in the ${openingName}?`,
+                back: pos.chosenMove,
+                chessData: {
+                    startingFen: pos.fen,
+                    moves: pos.moveHistory,
+                    openingName,
+                    orientation: color,
+                },
+                cardType: 'chessOpening',
+                tags: ['opening', eco.toLowerCase(), `${color}-opening`].filter(Boolean),
+                difficulty,
+                canBeQuizzed: true,
+                sourceType: 'imported',
+                createdBy: userId,
+                userEmail,
+                users: [userId],
+                categoryIds: categoryId ? [categoryId] : [],
+                categories: categoryId ? [{ _id: categoryId, name: categoryName || 'Chess Openings' }] : [],
+                environment: process.env.ENV_NAME || 'LOCAL',
+            };
+
+            let processed = this.ensureCategoryIds(flashcardData);
+            processed = this.processChessFields(processed);
+            const flashcard = await new Flashcard(processed).save();
+            flashcardIds.push(flashcard._id.toString());
+
+            // Init FSRS progress
+            try {
+                await userProgressService.getOrCreate(userId, flashcard._id.toString());
+            } catch (err) {
+                console.warn(`[createFromOpeningLine] FSRS init failed for card ${flashcard._id}:`, (err as any).message);
+            }
+
+            created++;
+        }
+
+        console.log(`[createFromOpeningLine] ${openingName} (${eco}): created=${created}, updated=${updated}, total=${flashcardIds.length}`);
+        return { created, updated, flashcardIds };
+    }
+
+    /**
+     * Get chessOpening flashcards for a given opening and user.
+     * Returns cards sorted by move history length (position order).
+     */
+    async getByOpening(openingName: string, userId: string) {
+        const flashcards = await Flashcard.find({
+            'chessData.openingName': openingName,
+            createdBy: userId,
+            cardType: 'chessOpening',
+            isActive: true
+        }).lean();
+
+        // Sort by move history length so index matches move position
+        flashcards.sort((a: any, b: any) => {
+            const aLen = a.chessData?.moves?.length || 0;
+            const bLen = b.chessData?.moves?.length || 0;
+            return aLen - bLen;
+        });
+
+        return flashcards;
     }
 
     /**

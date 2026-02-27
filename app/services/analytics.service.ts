@@ -510,7 +510,7 @@ export class AnalyticsService {
             await dailyActivity.save();
         }
 
-        return { success: true };
+        return { success: true, userId: userId || null };
     }
 
     /**

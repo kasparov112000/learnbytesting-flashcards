@@ -13,6 +13,7 @@ import routeBinder from './lib/router-binder';
 import { FlashcardService } from './services/flashcard.service';
 import { UserProgressService } from './services/user-progress.service';
 import { StudyService } from './services/study.service';
+import { DeckService } from './services/deck.service';
 import { LoggerWrapper } from './services/wrapper/loggerWrapper';
 
 const app = express();
@@ -60,11 +61,13 @@ function bindServices() {
     const flashcardService = new FlashcardService();
     const userProgressService = new UserProgressService();
     const studyService = new StudyService(flashcardService, userProgressService);
+    const deckService = new DeckService(flashcardService, userProgressService);
 
     services = {
       flashcardService,
       userProgressService,
       studyService,
+      deckService,
       loggerWrapper
     };
   } catch (err) {

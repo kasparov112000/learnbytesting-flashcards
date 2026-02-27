@@ -1,5 +1,6 @@
 import { DbService } from '../services/db.service';
 import { Flashcard } from '../models';
+import { DailyActivity } from '../models/daily-activity.model';
 import { FSRSService } from '../services/fsrs.service';
 import { AnalyticsService } from '../services/analytics.service';
 import axios from 'axios';
@@ -11,13 +12,142 @@ export default function (app, express, services) {
   let router = express.Router();
   const status = require('http-status');
 
-  const { flashcardService, userProgressService, studyService } = services;
+  const { flashcardService, userProgressService, studyService, deckService } = services;
   const analyticsService = new AnalyticsService();
 
   // ==================== HEALTH CHECK ====================
 
   router.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'flashcards' });
+  });
+
+  // ==================== DECKS ====================
+
+  router.get('/decks/health', (req, res) => {
+    res.json({ status: 'ok', service: 'flashcards-decks' });
+  });
+
+  router.get('/decks', async (req, res) => {
+    try {
+      const { userId, deckType, search } = req.query;
+      if (!userId) return res.status(400).json({ error: 'userId is required' });
+      const decks = await deckService.listByUser(userId, { deckType, search });
+      res.json({ result: decks });
+    } catch (err) {
+      console.error('[Decks] GET /decks error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/decks/:id', async (req, res) => {
+    try {
+      const deck = await deckService.getById(req.params.id);
+      if (!deck) return res.status(404).json({ error: 'Deck not found' });
+      res.json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] GET /decks/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/decks', async (req, res) => {
+    try {
+      const deck = await deckService.create(req.body);
+      res.status(201).json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] POST /decks error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.put('/decks/:id', async (req, res) => {
+    try {
+      const deck = await deckService.update(req.params.id, req.body);
+      if (!deck) return res.status(404).json({ error: 'Deck not found' });
+      res.json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] PUT /decks/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.delete('/decks/:id', async (req, res) => {
+    try {
+      const deck = await deckService.delete(req.params.id);
+      if (!deck) return res.status(404).json({ error: 'Deck not found' });
+      res.json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] DELETE /decks/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/decks/:id/progress/:userId', async (req, res) => {
+    try {
+      const progress = await deckService.getDeckProgress(req.params.id, req.params.userId);
+      if (!progress) return res.status(404).json({ error: 'Deck not found' });
+      res.json({ result: progress });
+    } catch (err) {
+      console.error('[Decks] GET /decks/:id/progress error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/decks/:id/cards/:userId', async (req, res) => {
+    try {
+      const mode = (req.query.mode as string) || 'all';
+      const cards = await deckService.getDeckStudyCards(req.params.id, req.params.userId, mode);
+      res.json({ result: cards });
+    } catch (err) {
+      console.error('[Decks] GET /decks/:id/cards error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/decks/:id/cards', async (req, res) => {
+    try {
+      const { flashcardIds, position } = req.body;
+      const deck = await deckService.addCards(req.params.id, flashcardIds, position);
+      if (!deck) return res.status(404).json({ error: 'Deck not found' });
+      res.json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] POST /decks/:id/cards error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.delete('/decks/:id/cards', async (req, res) => {
+    try {
+      const { flashcardIds } = req.body;
+      const deck = await deckService.removeCards(req.params.id, flashcardIds);
+      if (!deck) return res.status(404).json({ error: 'Deck not found' });
+      res.json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] DELETE /decks/:id/cards error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.put('/decks/:id/reorder', async (req, res) => {
+    try {
+      const { flashcardIds } = req.body;
+      const deck = await deckService.reorderCards(req.params.id, flashcardIds);
+      if (!deck) return res.status(404).json({ error: 'Deck not found' });
+      res.json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] PUT /decks/:id/reorder error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/decks/from-repertoire', async (req, res) => {
+    try {
+      const deck = await deckService.createFromRepertoire(req.body);
+      res.status(201).json({ result: deck });
+    } catch (err) {
+      console.error('[Decks] POST /decks/from-repertoire error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
   });
 
   router.get('/pingflashcards', (req, res) => {
@@ -47,6 +177,29 @@ export default function (app, express, services) {
       res.status(result.isNew ? 201 : 200).json({ result });
     } catch (error: any) {
       console.error('[Flashcards] Create from question error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ==================== FLASHCARD FROM OPENING LINE ====================
+
+  // Create flashcards from an opening line (repertoire import)
+  router.post('/flashcards/from-opening-line', async (req, res) => {
+    try {
+      const { userId, userEmail, positions, eco, openingName, color, categoryId, categoryName } = req.body;
+
+      if (!userId || !positions?.length || !openingName) {
+        return res.status(400).json({ error: 'Missing required fields: userId, positions, openingName' });
+      }
+
+      const result = await flashcardService.createFromOpeningLine(
+        { userId, userEmail, positions, eco, openingName, color: color || 'white', categoryId, categoryName },
+        userProgressService
+      );
+
+      res.status(200).json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Create from opening line error:', error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -363,6 +516,38 @@ export default function (app, express, services) {
       res.json({ result: flashcards });
     } catch (error: any) {
       console.error('[Flashcards] Get by question error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get available card types (enum values for dropdowns/filters)
+  router.get('/flashcards/card-types', (_req, res) => {
+    res.json({
+      result: [
+        { value: 'text', label: 'Text', icon: 'description' },
+        { value: 'multipleChoice', label: 'Multiple Choice', icon: 'checklist' },
+        { value: 'trueFalse', label: 'True / False', icon: 'toggle_on' },
+        { value: 'chessPuzzle', label: 'Chess Puzzle', icon: 'extension' },
+        { value: 'chessOpening', label: 'Chess Opening', icon: 'menu_book' },
+        { value: 'match', label: 'Match', icon: 'compare_arrows' }
+      ]
+    });
+  });
+
+  // Get chessOpening flashcards for a given opening + user (for lesson practice)
+  router.get('/flashcards/by-opening', async (req, res) => {
+    try {
+      const openingName = req.query.openingName as string;
+      const userId = req.query.userId as string;
+
+      if (!openingName || !userId) {
+        return res.status(400).json({ error: 'Missing required query params: openingName, userId' });
+      }
+
+      const flashcards = await flashcardService.getByOpening(openingName, userId);
+      res.json({ result: flashcards });
+    } catch (error: any) {
+      console.error('[Flashcards] getByOpening error:', error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -728,6 +913,24 @@ export default function (app, express, services) {
         rating,
         responseTimeMs
       );
+
+      // Update DailyActivity so the review counts toward "today" stats
+      try {
+        const dailyActivity = await (DailyActivity as any).getOrCreateToday(req.params.userId);
+        dailyActivity.recordReview(rating, responseTimeMs || 0);
+        await dailyActivity.save();
+      } catch (err: any) {
+        console.warn('[Flashcards] DailyActivity update failed (non-blocking):', err.message);
+      }
+
+      // Notify stats service to invalidate cache (fire-and-forget)
+      const STATS_URL = process.env.STATS_URL || 'http://localhost:3038';
+      axios.post(`${STATS_URL}/events/flashcard-review`, {
+        user_id: req.params.userId,
+        flashcard_id: req.params.flashcardId,
+        quality: rating,
+        response_time_ms: responseTimeMs || 0
+      }, { timeout: 3000 }).catch(() => {});
 
       // Send to Qdrant for RAG analytics (async, non-blocking)
       if (userEmail) {
@@ -1140,6 +1343,23 @@ export default function (app, express, services) {
         isNewCard,
         weaknessTagData  // Array of { tagId, tagType, tagSpecific }
       );
+
+      // Fire-and-forget webhook to stats service (via orchestrator)
+      const orchestratorUrl = ENV_NAME === 'LOCAL'
+        ? 'http://localhost:8080'
+        : 'http://orchestrator-helm.default.svc.cluster.local:8080';
+      axios.post(`${orchestratorUrl}/api/stats/events/flashcard-review`, {
+        user_id: result?.userId || req.body.userId,
+        session_id: req.params.sessionId,
+        quality,
+        response_time_ms: responseTimeMs,
+        category_id: categoryId,
+        category_name: categoryName,
+        is_new_card: isNewCard,
+        weakness_tags: (weaknessTagData || []).map((t: any) => t.tagId || t.tag),
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
+
       res.json({ result });
     } catch (error: any) {
       console.error('[Flashcards] Record review error:', error);

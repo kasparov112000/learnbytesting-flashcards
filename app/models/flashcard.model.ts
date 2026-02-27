@@ -24,6 +24,14 @@ const FlashcardSchema = new Schema({
         type: String
     },
 
+    // Explicit card type for type-aware rendering, filtering, and per-type UI
+    cardType: {
+        type: String,
+        enum: ['text', 'multipleChoice', 'trueFalse', 'chessPuzzle', 'chessOpening', 'match'],
+        default: 'text',
+        index: true
+    },
+
     // Full category ancestry chain (from root to most specific)
     // Enables hierarchical filtering: query any level to get all cards beneath it
     // Example: [{ _id: "chess", name: "Chess" }, { _id: "openings", name: "Openings" }, { _id: "italian", name: "Italian Game" }]
@@ -158,6 +166,23 @@ const FlashcardSchema = new Schema({
         type: String  // URL to image for back
     },
 
+    // Match pairs for match-type flashcards
+    matchPairs: [{
+        leftItem: {
+            id: { type: String },
+            content: { type: String },
+            imageUrl: { type: String },
+            type: { type: String, enum: ['text', 'image', 'both'], default: 'text' }
+        },
+        rightItem: {
+            id: { type: String },
+            content: { type: String },
+            imageUrl: { type: String },
+            type: { type: String, enum: ['text', 'image', 'both'], default: 'text' }
+        },
+        feedback: { type: String }
+    }],
+
     // Original multiple choice options (for future quiz generation)
     options: [{
         type: String
@@ -221,6 +246,7 @@ const FlashcardSchema = new Schema({
 });
 
 // Indexes for common queries
+FlashcardSchema.index({ cardType: 1, isActive: 1 });
 FlashcardSchema.index({ category: 1, isActive: 1 });
 FlashcardSchema.index({ categoryIds: 1, isActive: 1 });  // Main index for hierarchical queries
 FlashcardSchema.index({ 'primaryCategory._id': 1, isActive: 1 });
