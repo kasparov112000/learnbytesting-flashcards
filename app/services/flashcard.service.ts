@@ -557,9 +557,12 @@ export class FlashcardService {
         const flashcardIds: string[] = [];
 
         for (const pos of positions) {
-            // Dedup: same FEN, same user, same cardType
+            // Dedup: same FEN, same user, same cardType, same opening
+            // Must include openingName because the correct move from the same position
+            // differs between openings (e.g., starting position → e4 vs c4 vs d4)
             const existing = await Flashcard.findOne({
                 'chessData.startingFen': pos.fen,
+                'chessData.openingName': openingName,
                 createdBy: userId,
                 cardType: 'chessOpening',
                 isActive: true
