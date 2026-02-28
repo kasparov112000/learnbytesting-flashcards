@@ -278,9 +278,7 @@ export default function (app, express, services) {
 
       // Build match stage for aggregate pipeline
       // Use $and to combine multiple conditions properly
-      // Exclude chessOpening cards by default — they belong to the openings domain
-      // and are reviewed there, not in the flashcards study session
-      const matchStage: any = { isActive: true, cardType: { $ne: 'chessOpening' } };
+      const matchStage: any = { isActive: true };
       const andConditions: any[] = [];
 
       if (category) matchStage.category = category;
