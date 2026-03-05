@@ -150,6 +150,253 @@ export default function (app, express, services) {
     }
   });
 
+  // ==================== OPENING LINES (openingLine-type flashcards) ====================
+
+  router.get('/flashcards/openings/categories', async (req, res) => {
+    try {
+      const categories = await flashcardService.getOpeningCategories();
+      res.json({ categories });
+    } catch (err) {
+      console.error('[Openings] GET /flashcards/openings/categories error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/openings/letter/:letter', async (req, res) => {
+    try {
+      const { page, pageSize } = req.query;
+      const result = await flashcardService.getOpeningsByLetter(
+        req.params.letter,
+        page ? parseInt(page as string) : 1,
+        pageSize ? parseInt(pageSize as string) : 50
+      );
+      res.json(result);
+    } catch (err) {
+      console.error('[Openings] GET /flashcards/openings/letter/:letter error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/openings/search', async (req, res) => {
+    try {
+      const q = (req.query.q as string) || '';
+      if (!q.trim()) return res.status(400).json({ error: 'Query parameter q is required' });
+      const openings = await flashcardService.searchOpenings(q);
+      // Map to response shape matching current categories API (supports both openingLine and openingLesson)
+      const mapped = openings.map((fc: any) => {
+        const ol = fc.openingLine || fc.openingLesson;
+        return {
+          _id: fc._id,
+          eco: ol?.eco,
+          name: ol?.openingName,
+          variationName: ol?.variationName,
+          pgn: ol?.pgn,
+          isVariation: ol?.isVariation || false,
+          mainOpeningName: ol?.mainOpeningName,
+          moveCount: ol?.moveCount,
+          difficulty: ol?.difficulty
+        };
+      });
+      res.json({ openings: mapped });
+    } catch (err) {
+      console.error('[Openings] GET /flashcards/openings/search error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/openings/:id', async (req, res) => {
+    try {
+      const opening = await flashcardService.getOpeningById(req.params.id);
+      if (!opening) return res.status(404).json({ error: 'Opening not found' });
+      res.json({ result: opening });
+    } catch (err) {
+      console.error('[Openings] GET /flashcards/openings/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/flashcards/openings', async (req, res) => {
+    try {
+      const opening = await flashcardService.createOpening(req.body);
+      res.status(201).json({ result: opening });
+    } catch (err) {
+      console.error('[Openings] POST /flashcards/openings error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/flashcards/openings/bulk', async (req, res) => {
+    try {
+      const openings = req.body.openings || req.body;
+      if (!Array.isArray(openings)) return res.status(400).json({ error: 'Expected array of openings' });
+      const result = await flashcardService.bulkCreateOpenings(openings);
+      res.status(201).json({ result, count: result.length });
+    } catch (err) {
+      console.error('[Openings] POST /flashcards/openings/bulk error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  // ==================== OPENING LESSONS (openingLesson-type flashcards) ====================
+
+  router.get('/flashcards/opening-lessons/search', async (req, res) => {
+    try {
+      const q = (req.query.q as string) || '';
+      if (!q.trim()) return res.status(400).json({ error: 'Query parameter q is required' });
+      const lessons = await flashcardService.searchOpeningLessons(q);
+      res.json({ result: lessons });
+    } catch (err) {
+      console.error('[OpeningLessons] GET /flashcards/opening-lessons/search error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/opening-lessons/eco/:eco/difficulty/:difficulty', async (req, res) => {
+    try {
+      const lessons = await flashcardService.getOpeningLessonsByEcoAndDifficulty(req.params.eco, req.params.difficulty);
+      res.json({ result: lessons });
+    } catch (err) {
+      console.error('[OpeningLessons] GET /flashcards/opening-lessons/eco/:eco/difficulty/:difficulty error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/opening-lessons/eco/:eco', async (req, res) => {
+    try {
+      const lessons = await flashcardService.getOpeningLessonsByEco(req.params.eco);
+      res.json({ result: lessons });
+    } catch (err) {
+      console.error('[OpeningLessons] GET /flashcards/opening-lessons/eco/:eco error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/opening-lessons/:id', async (req, res) => {
+    try {
+      const lesson = await Flashcard.findOne({ _id: req.params.id, isActive: true, cardType: 'openingLesson' }).lean();
+      if (!lesson) return res.status(404).json({ error: 'Lesson not found' });
+      res.json({ result: lesson });
+    } catch (err) {
+      console.error('[OpeningLessons] GET /flashcards/opening-lessons/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/opening-lessons', async (req, res) => {
+    try {
+      const { eco, difficulty } = req.query;
+      const lessons = await flashcardService.getOpeningLessons({
+        eco: eco as string,
+        difficulty: difficulty as string
+      });
+      res.json({ result: lessons });
+    } catch (err) {
+      console.error('[OpeningLessons] GET /flashcards/opening-lessons error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/flashcards/opening-lessons', async (req, res) => {
+    try {
+      const lesson = await flashcardService.createOpeningLesson(req.body);
+      res.status(201).json({ result: lesson });
+    } catch (err) {
+      console.error('[OpeningLessons] POST /flashcards/opening-lessons error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/flashcards/opening-lessons/bulk', async (req, res) => {
+    try {
+      const lessons = req.body.lessons || req.body;
+      if (!Array.isArray(lessons)) return res.status(400).json({ error: 'Expected array of lessons' });
+      const result = await flashcardService.bulkCreateOpeningLessons(lessons);
+      res.status(201).json({ result, count: result.length });
+    } catch (err) {
+      console.error('[OpeningLessons] POST /flashcards/opening-lessons/bulk error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.put('/flashcards/opening-lessons/:id', async (req, res) => {
+    try {
+      const lesson = await Flashcard.findOneAndUpdate(
+        { _id: req.params.id, isActive: true, cardType: 'openingLesson' },
+        { $set: { openingLesson: req.body.openingLesson || req.body, ...(req.body.front ? { front: req.body.front } : {}), ...(req.body.back ? { back: req.body.back } : {}) } },
+        { new: true }
+      );
+      if (!lesson) return res.status(404).json({ error: 'Lesson not found' });
+      res.json({ result: lesson });
+    } catch (err) {
+      console.error('[OpeningLessons] PUT /flashcards/opening-lessons/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.delete('/flashcards/opening-lessons/:id', async (req, res) => {
+    try {
+      const lesson = await Flashcard.findOneAndUpdate(
+        { _id: req.params.id, cardType: 'openingLesson' },
+        { $set: { isActive: false } },
+        { new: true }
+      );
+      if (!lesson) return res.status(404).json({ error: 'Lesson not found' });
+      res.json({ result: lesson });
+    } catch (err) {
+      console.error('[OpeningLessons] DELETE /flashcards/opening-lessons/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  // ==================== FAMOUS GAMES (game-type flashcards) ====================
+
+  router.get('/flashcards/games/search', async (req, res) => {
+    try {
+      const q = (req.query.q as string) || '';
+      if (!q.trim()) return res.status(400).json({ error: 'Query parameter q is required' });
+      const games = await flashcardService.searchGames(q);
+      res.json({ result: games });
+    } catch (err) {
+      console.error('[Games] GET /flashcards/games/search error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/games/:id', async (req, res) => {
+    try {
+      const game = await flashcardService.getGameById(req.params.id);
+      if (!game) return res.status(404).json({ error: 'Game not found' });
+      res.json({ result: game });
+    } catch (err) {
+      console.error('[Games] GET /flashcards/games/:id error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.get('/flashcards/games', async (req, res) => {
+    try {
+      const { difficulty, eco } = req.query;
+      const games = await flashcardService.getGames({
+        difficulty: difficulty as string,
+        eco: eco as string
+      });
+      res.json({ result: games });
+    } catch (err) {
+      console.error('[Games] GET /flashcards/games error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
+  router.post('/flashcards/games', async (req, res) => {
+    try {
+      const game = await flashcardService.createGame(req.body);
+      res.status(201).json({ result: game });
+    } catch (err) {
+      console.error('[Games] POST /flashcards/games error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
   router.get('/pingflashcards', (req, res) => {
     console.log('info', 'GET Ping Flashcards', {
       timestamp: Date.now(),
@@ -186,14 +433,14 @@ export default function (app, express, services) {
   // Create flashcards from an opening line (repertoire import)
   router.post('/flashcards/from-opening-line', async (req, res) => {
     try {
-      const { userId, userEmail, positions, eco, openingName, color, categoryId, categoryName } = req.body;
+      const { userId, userEmail, positions, eco, openingName, color, categoryId, categoryName, categories, cardType, gameId, name, tags } = req.body;
 
       if (!userId || !positions?.length || !openingName) {
         return res.status(400).json({ error: 'Missing required fields: userId, positions, openingName' });
       }
 
       const result = await flashcardService.createFromOpeningLine(
-        { userId, userEmail, positions, eco, openingName, color: color || 'white', categoryId, categoryName },
+        { userId, userEmail, positions, eco, openingName, color: color || 'white', categoryId, categoryName, categories, cardType, gameId, name, tags },
         userProgressService
       );
 
@@ -278,7 +525,7 @@ export default function (app, express, services) {
 
       // Build match stage for aggregate pipeline
       // Use $and to combine multiple conditions properly
-      const matchStage: any = { isActive: true };
+      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] } };
       const andConditions: any[] = [];
 
       if (category) matchStage.category = category;
@@ -446,7 +693,8 @@ export default function (app, express, services) {
 
       // Build sort stage
       let sortStage: any = { createdAt: -1 };
-      if (sort) {
+      const isFsrsSort = sort === 'fsrs' && userId;
+      if (sort && sort !== 'fsrs') {
         try {
           sortStage = JSON.parse(sort as string);
         } catch (e) {
@@ -454,22 +702,167 @@ export default function (app, express, services) {
         }
       }
 
-      // Use aggregate pipeline for efficient querying
-      const pipeline = [
-        { $match: matchStage },
-        { $sort: sortStage },
-        {
-          $facet: {
-            rows: [
-              { $skip: skipCount },
-              { $limit: size }
-            ],
-            totalCount: [
-              { $count: 'count' }
-            ]
+      // Build aggregate pipeline
+      let pipeline: any[];
+
+      if (isFsrsSort) {
+        // FSRS-aware sort: join with UserProgress to order by spaced repetition priority
+        // Priority: 1) overdue (most overdue first), 2) learning/relearning, 3) new, 4) future due
+        const now = new Date();
+        pipeline = [
+          { $match: matchStage },
+          // Left join with UserProgress for this user
+          {
+            $lookup: {
+              from: 'user_progress',
+              let: { cardId: '$_id' },
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $and: [
+                        { $eq: ['$userId', userId] },
+                        { $eq: ['$flashcardId', '$$cardId'] }
+                      ]
+                    }
+                  }
+                },
+                { $limit: 1 }
+              ],
+              as: '_progress'
+            }
+          },
+          // Flatten the progress array to a single object (or null)
+          {
+            $addFields: {
+              _prog: { $ifNull: [{ $arrayElemAt: ['$_progress', 0] }, null] },
+            }
+          },
+          // Compute sort keys
+          {
+            $addFields: {
+              _sortBucket: {
+                $switch: {
+                  branches: [
+                    // Bucket 0: overdue cards (nextReviewDate <= now)
+                    {
+                      case: {
+                        $and: [
+                          { $ne: ['$_prog', null] },
+                          { $ne: ['$_prog.nextReviewDate', null] },
+                          { $lte: ['$_prog.nextReviewDate', now] }
+                        ]
+                      },
+                      then: 0
+                    },
+                    // Bucket 1: learning/relearning cards
+                    {
+                      case: {
+                        $and: [
+                          { $ne: ['$_prog', null] },
+                          { $in: ['$_prog.fsrsState', [1, 3]] }
+                        ]
+                      },
+                      then: 1
+                    },
+                    // Bucket 2: new cards (no progress or state=new)
+                    {
+                      case: {
+                        $or: [
+                          { $eq: ['$_prog', null] },
+                          { $eq: ['$_prog.fsrsState', 0] }
+                        ]
+                      },
+                      then: 2
+                    }
+                  ],
+                  // Bucket 3: future due (not yet due)
+                  default: 3
+                }
+              },
+              _sortDate: {
+                $ifNull: ['$_prog.nextReviewDate', new Date('2099-01-01')]
+              }
+            }
+          },
+          // Sort by bucket first, then by nextReviewDate within each bucket
+          { $sort: { _sortBucket: 1, _sortDate: 1 } },
+          // Project FSRS progress fields onto the flashcard, then clean up internals
+          {
+            $addFields: {
+              fsrsStatus: {
+                $switch: {
+                  branches: [
+                    { case: { $eq: ['$_prog', null] }, then: 'new' },
+                    { case: { $eq: ['$_prog.fsrsState', 0] }, then: 'new' },
+                    {
+                      case: {
+                        $and: [
+                          { $in: ['$_prog.fsrsState', [1, 3]] }
+                        ]
+                      },
+                      then: {
+                        $cond: [{ $eq: ['$_prog.fsrsState', 3] }, 'relearning', 'learning']
+                      }
+                    },
+                    {
+                      case: {
+                        $and: [
+                          { $ne: ['$_prog.nextReviewDate', null] },
+                          { $lte: ['$_prog.nextReviewDate', now] }
+                        ]
+                      },
+                      then: 'due'
+                    }
+                  ],
+                  default: 'review'
+                }
+              },
+              fsrsNextReview: '$_prog.nextReviewDate',
+              fsrsStability: '$_prog.stability',
+              fsrsTotalReviews: '$_prog.totalReviews',
+              fsrsLastReview: '$_prog.lastReviewDate'
+            }
+          },
+          // Clean up temporary fields
+          {
+            $project: {
+              _progress: 0,
+              _prog: 0,
+              _sortBucket: 0,
+              _sortDate: 0
+            }
+          },
+          {
+            $facet: {
+              rows: [
+                { $skip: skipCount },
+                { $limit: size }
+              ],
+              totalCount: [
+                { $count: 'count' }
+              ]
+            }
           }
-        }
-      ];
+        ];
+      } else {
+        // Standard sort (default: createdAt descending)
+        pipeline = [
+          { $match: matchStage },
+          { $sort: sortStage },
+          {
+            $facet: {
+              rows: [
+                { $skip: skipCount },
+                { $limit: size }
+              ],
+              totalCount: [
+                { $count: 'count' }
+              ]
+            }
+          }
+        ];
+      }
 
       const result = await Flashcard.aggregate(pipeline).exec();
 
@@ -529,6 +922,7 @@ export default function (app, express, services) {
         { value: 'trueFalse', label: 'True / False', icon: 'toggle_on' },
         { value: 'chessPuzzle', label: 'Chess Puzzle', icon: 'extension' },
         { value: 'chessOpening', label: 'Chess Opening', icon: 'menu_book' },
+        { value: 'chessGame', label: 'Chess Game', icon: 'sports_esports' },
         { value: 'match', label: 'Match', icon: 'compare_arrows' }
       ]
     });
@@ -539,12 +933,13 @@ export default function (app, express, services) {
     try {
       const openingName = req.query.openingName as string;
       const userId = req.query.userId as string;
+      const cardType = req.query.cardType as string | undefined;
 
       if (!openingName || !userId) {
         return res.status(400).json({ error: 'Missing required query params: openingName, userId' });
       }
 
-      const flashcards = await flashcardService.getByOpening(openingName, userId);
+      const flashcards = await flashcardService.getByOpening(openingName, userId, cardType);
       res.json({ result: flashcards });
     } catch (error: any) {
       console.error('[Flashcards] getByOpening error:', error);
@@ -577,6 +972,21 @@ export default function (app, express, services) {
     } catch (error: any) {
       console.error('[Flashcards] Update error:', error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Update difficulty (user override)
+  router.patch('/flashcards/:id/difficulty', async (req, res) => {
+    try {
+      const { difficulty } = req.body;
+      if (!difficulty || difficulty < 1 || difficulty > 5) {
+        return res.status(400).json({ error: 'difficulty must be between 1 and 5' });
+      }
+      const flashcard = await flashcardService.updateDifficulty(req.params.id, difficulty, userProgressService);
+      res.json({ result: flashcard });
+    } catch (error: any) {
+      console.error('[Flashcards] Update difficulty error:', error);
+      res.status(error.message === 'Flashcard not found' ? 404 : 500).json({ error: error.message });
     }
   });
 
@@ -766,6 +1176,25 @@ export default function (app, express, services) {
   });
 
   // ==================== USER PROGRESS ====================
+
+  // Batch progress — get FSRS progress for multiple flashcard IDs at once
+  router.post('/progress/batch', async (req, res) => {
+    try {
+      const { userId, flashcardIds } = req.body;
+      if (!userId || !Array.isArray(flashcardIds)) {
+        return res.status(400).json({ error: 'userId and flashcardIds[] required' });
+      }
+      const UserProgress = require('mongoose').model('UserProgress');
+      const progress = await UserProgress.find({
+        userId,
+        flashcardId: { $in: flashcardIds },
+        isSuspended: { $ne: true }
+      }).lean();
+      res.json({ result: progress });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   // Get user's progress for all cards
   router.get('/progress/:userId', async (req, res) => {
