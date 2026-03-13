@@ -3,10 +3,17 @@ import { Flashcard } from '../models';
 import { DailyActivity } from '../models/daily-activity.model';
 import { FSRSService } from '../services/fsrs.service';
 import { AnalyticsService } from '../services/analytics.service';
+import { buildCategoryMatchStage } from '../utils/category-match';
+import { resolveLanguage, resolveLanguageMany } from '../utils/resolve-language.util';
 import axios from 'axios';
 
 // Get current environment for flashcard creation
 const ENV_NAME = process.env.ENV_NAME || 'LOCAL';
+
+/** Extract requested language from query string (defaults to 'en') */
+function getLang(req: any): string {
+  return (req.query?.lang as string) || 'en';
+}
 
 export default function (app, express, services) {
   let router = express.Router();
@@ -184,7 +191,8 @@ export default function (app, express, services) {
       const openings = await flashcardService.searchOpenings(q);
       // Map to response shape matching current categories API (supports both openingLine and openingLesson)
       const mapped = openings.map((fc: any) => {
-        const ol = fc.openingLine || fc.openingLesson;
+        const olLine = fc.openingLine?.openingName ? fc.openingLine : null;
+        const ol = olLine || fc.openingLesson;
         return {
           _id: fc._id,
           eco: ol?.eco,
@@ -275,7 +283,7 @@ export default function (app, express, services) {
     try {
       const lesson = await Flashcard.findOne({ _id: req.params.id, isActive: true, cardType: 'openingLesson' }).lean();
       if (!lesson) return res.status(404).json({ error: 'Lesson not found' });
-      res.json({ result: lesson });
+      res.json({ result: resolveLanguage(lesson, getLang(req)) });
     } catch (err) {
       console.error('[OpeningLessons] GET /flashcards/opening-lessons/:id error:', err);
       res.status(500).json({ error: (err as any).message });
@@ -289,7 +297,7 @@ export default function (app, express, services) {
         eco: eco as string,
         difficulty: difficulty as string
       });
-      res.json({ result: lessons });
+      res.json({ result: resolveLanguageMany(lessons, getLang(req)) });
     } catch (err) {
       console.error('[OpeningLessons] GET /flashcards/opening-lessons error:', err);
       res.status(500).json({ error: (err as any).message });
@@ -366,7 +374,7 @@ export default function (app, express, services) {
     try {
       const game = await flashcardService.getGameById(req.params.id);
       if (!game) return res.status(404).json({ error: 'Game not found' });
-      res.json({ result: game });
+      res.json({ result: resolveLanguage(game, getLang(req)) });
     } catch (err) {
       console.error('[Games] GET /flashcards/games/:id error:', err);
       res.status(500).json({ error: (err as any).message });
@@ -380,7 +388,7 @@ export default function (app, express, services) {
         difficulty: difficulty as string,
         eco: eco as string
       });
-      res.json({ result: games });
+      res.json({ result: resolveLanguageMany(games, getLang(req)) });
     } catch (err) {
       console.error('[Games] GET /flashcards/games error:', err);
       res.status(500).json({ error: (err as any).message });
@@ -454,6 +462,25 @@ export default function (app, express, services) {
   // ==================== FLASHCARD CRUD ====================
 
   // Create flashcard
+  // Fetch multiple flashcards by their IDs (preserves input order)
+  router.post('/flashcards/by-ids', async (req, res) => {
+    try {
+      const { ids } = req.body;
+      if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.json({ result: [] });
+      }
+      const cards = await flashcardService.getAll({ _id: { $in: ids } }, { limit: ids.length });
+      const resolved = resolveLanguageMany(cards, getLang(req));
+      // Preserve the order of the input ids array
+      const cardMap = new Map(resolved.map((c: any) => [c._id?.toString(), c]));
+      const ordered = ids.map((id: string) => cardMap.get(id)).filter(Boolean);
+      res.json({ result: ordered });
+    } catch (error: any) {
+      console.error('[Flashcards] by-ids error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   router.post('/flashcards', async (req, res) => {
     try {
       // Auto-set environment based on current ENV_NAME
@@ -511,9 +538,125 @@ export default function (app, express, services) {
     try {
       console.log('[Flashcards] Grid request:', JSON.stringify(req.body, null, 2));
       const result = await flashcardService.getGrid(req.body);
+      const lang = getLang(req);
+      if (result?.rows) {
+        result.rows = resolveLanguageMany(result.rows, lang);
+      }
       res.json(result);
     } catch (error: any) {
       console.error('[Flashcards] Grid error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get distinct categories with counts from flashcard data
+  router.get('/flashcards/categories', async (req, res) => {
+    try {
+      const { filterCategoryId, filterCategoryName } = req.query;
+      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] } };
+      const andConditions: any[] = [];
+
+      // Scope to parent category if provided (same logic as tags/flashcards endpoints)
+      if (filterCategoryId) {
+        let categoryIdVariants: any[] = [filterCategoryId];
+        const mongoose = require('mongoose');
+        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
+          try { categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId)); } catch (e) { /* keep string */ }
+        }
+        const categoryConditions: any[] = [
+          { categoryIds: { $in: categoryIdVariants } },
+          { 'primaryCategory._id': { $in: categoryIdVariants } },
+          { 'categories._id': { $in: categoryIdVariants } },
+          { categoryId: { $in: categoryIdVariants } }
+        ];
+        // When ID is available, only match by ID — skip name fallback to avoid
+        // cross-category pollution when different categories share the same name.
+        andConditions.push({ $or: categoryConditions });
+      } else if (filterCategoryName) {
+        const escapedName = (filterCategoryName as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const nameRegex = new RegExp(`^${escapedName}$`, 'i');
+        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
+        andConditions.push({
+          $or: [
+            { 'primaryCategory.name': nameRegex },
+            { 'categories.name': nameRegex },
+            { categoryIds: compositePathRegex }
+          ]
+        });
+      }
+
+      if (andConditions.length > 0) {
+        matchStage.$and = andConditions;
+      }
+
+      // Unwind the categories array and group by _id + name
+      const pipeline = [
+        { $match: matchStage },
+        { $match: { categories: { $exists: true, $ne: [] } } },
+        { $unwind: '$categories' },
+        { $group: { _id: { id: '$categories._id', name: '$categories.name' }, count: { $sum: 1 } } },
+        { $sort: { count: -1 as const } },
+        { $project: { _id: '$_id.id', name: '$_id.name', count: 1 } }
+      ];
+      const categories = await Flashcard.aggregate(pipeline);
+      res.json({ result: categories });
+    } catch (error: any) {
+      console.error('[Flashcards] GET /flashcards/categories error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get distinct tags with counts, scoped to category
+  router.get('/flashcards/tags', async (req, res) => {
+    try {
+      const { filterCategoryId, filterCategoryName } = req.query;
+      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] }, tags: { $exists: true, $ne: [] } };
+      const andConditions: any[] = [];
+
+      // Reuse same category filtering logic as main GET /flashcards
+      if (filterCategoryId) {
+        let categoryIdVariants: any[] = [filterCategoryId];
+        const mongoose = require('mongoose');
+        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
+          try { categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId)); } catch (e) { /* keep string */ }
+        }
+        const categoryConditions: any[] = [
+          { categoryIds: { $in: categoryIdVariants } },
+          { 'primaryCategory._id': { $in: categoryIdVariants } },
+          { 'categories._id': { $in: categoryIdVariants } },
+          { categoryId: { $in: categoryIdVariants } }
+        ];
+        // When ID is available, only match by ID — skip name fallback to avoid
+        // cross-category pollution when different categories share the same name.
+        andConditions.push({ $or: categoryConditions });
+      } else if (filterCategoryName) {
+        const escapedName = (filterCategoryName as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const nameRegex = new RegExp(`^${escapedName}$`, 'i');
+        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
+        andConditions.push({
+          $or: [
+            { 'primaryCategory.name': nameRegex },
+            { 'categories.name': nameRegex },
+            { categoryIds: compositePathRegex }
+          ]
+        });
+      }
+
+      if (andConditions.length > 0) {
+        matchStage.$and = andConditions;
+      }
+
+      const pipeline = [
+        { $match: matchStage },
+        { $unwind: '$tags' },
+        { $group: { _id: '$tags', count: { $sum: 1 } } },
+        { $sort: { count: -1 as const } },
+        { $project: { _id: 0, tag: '$_id', count: 1 } }
+      ];
+      const tags = await Flashcard.aggregate(pipeline);
+      res.json({ result: tags });
+    } catch (error: any) {
+      console.error('[Flashcards] GET /flashcards/tags error:', error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -523,103 +666,26 @@ export default function (app, express, services) {
     try {
       const { category, categoryId, filterCategoryId, filterCategoryName, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
-      // Build match stage for aggregate pipeline
-      // Use $and to combine multiple conditions properly
-      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] } };
-      const andConditions: any[] = [];
+      // Build match stage using shared category-match helper
+      const matchStage = buildCategoryMatchStage({
+        filterCategoryId: filterCategoryId as string,
+        filterCategoryName: filterCategoryName as string,
+        userId: userId as string,
+      });
 
+      // Legacy exact-match category field (when no hierarchical filter is provided)
       if (category) matchStage.category = category;
-
-      // Hierarchical category filtering - finds all cards that have this category in their ancestry
-      // Supports multiple fields for backward compatibility with flashcards that may not have categoryIds populated
-      if (filterCategoryId) {
-        // Try to convert to ObjectId if it looks like one, otherwise use as string
-        let categoryIdVariants: any[] = [filterCategoryId];
-
-        // Check if it's a valid ObjectId string and add ObjectId variant
-        const mongoose = require('mongoose');
-        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
-          try {
-            categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId));
-          } catch (e) {
-            // Keep just the string version
-          }
-        }
-
-        // Build comprehensive $or query to handle both string and ObjectId formats
-        // and check all possible category fields
-        const categoryConditions: any[] = [
-          // categoryIds array (main hierarchical field) - check both string and ObjectId
-          { categoryIds: { $in: categoryIdVariants } },
-          // primaryCategory._id - check both formats
-          { 'primaryCategory._id': { $in: categoryIdVariants } },
-          // categories array _id field - check both formats
-          { 'categories._id': { $in: categoryIdVariants } },
-          // Legacy categoryId field - check both formats
-          { categoryId: { $in: categoryIdVariants } }
-        ];
-
-        // If category name is provided, also match by name (fallback for legacy data)
-        // This handles composite categoryIds like "uuid::Name1::Name2::TargetCategory"
-        if (filterCategoryName) {
-          const nameRegex = new RegExp(`^${filterCategoryName}$`, 'i');
-          categoryConditions.push(
-            { 'primaryCategory.name': nameRegex },
-            { 'categories.name': nameRegex }
-          );
-
-          // Also match composite categoryIds that end with "::CategoryName"
-          // Escape special regex characters in the name
-          const escapedName = filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
-          categoryConditions.push(
-            { categoryIds: compositePathRegex }
-          );
-          console.log('[Flashcards] Added composite path regex:', `::${escapedName}$`);
-        }
-
-        andConditions.push({ $or: categoryConditions });
-
-        console.log('[Flashcards] Using categoryIdVariants:', categoryIdVariants);
-        console.log('[Flashcards] Category name filter:', filterCategoryName);
-      } else if (filterCategoryName) {
-        // Filter by category name only (no ID provided)
-        const nameRegex = new RegExp(`^${filterCategoryName}$`, 'i');
-
-        // Also match composite categoryIds that end with "::CategoryName"
-        const escapedName = filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
-
-        andConditions.push({
-          $or: [
-            { 'primaryCategory.name': nameRegex },
-            { 'categories.name': nameRegex },
-            { categoryIds: compositePathRegex }
-          ]
-        });
-        console.log('[Flashcards] Filtering by category name only:', filterCategoryName);
-        console.log('[Flashcards] Added composite path regex:', `::${escapedName}$`);
-      } else if (categoryId) {
+      if (!filterCategoryId && !filterCategoryName && categoryId) {
         matchStage.categoryId = categoryId;
       }
-
       if (tag) matchStage.tags = tag;
 
-      // User visibility filter: users see their own cards OR public cards
-      if (userId) {
-        andConditions.push({
-          $or: [
-            { createdBy: userId },
-            { isPublic: true }
-          ]
-        });
-      }
-
-      // Add search filter using $or with regex
+      // Search filter (GET /flashcards specific)
       if (search && (search as string).trim()) {
         const searchText = (search as string).trim();
         const searchRegex = new RegExp(searchText, 'i');
-        andConditions.push({
+        if (!matchStage.$and) matchStage.$and = [];
+        matchStage.$and.push({
           $or: [
             { front: searchRegex },
             { back: searchRegex },
@@ -632,59 +698,7 @@ export default function (app, express, services) {
         });
       }
 
-      // Add $and conditions if any exist
-      if (andConditions.length > 0) {
-        matchStage.$and = andConditions;
-      }
-
       console.log('[Flashcards] Query params:', { filterCategoryId, filterCategoryName, search, userId, page, pageSize });
-      console.log('[Flashcards] Match stage:', JSON.stringify(matchStage, null, 2));
-
-      // Debug: Check if there are any flashcards with this categoryId in their categoryIds array
-      if (filterCategoryId || filterCategoryName) {
-        // Sample a few flashcards to see their category structure
-        const sampleFlashcards = await Flashcard.find({ isActive: true }).limit(3).lean();
-        console.log('[Flashcards] DEBUG: Sample flashcards category data:');
-        sampleFlashcards.forEach((fc: any, idx) => {
-          console.log(`  [${idx}] front: "${fc.front?.substring(0, 40)}..."`);
-          console.log(`      categoryIds: ${JSON.stringify(fc.categoryIds)}`);
-          console.log(`      primaryCategory: ${JSON.stringify(fc.primaryCategory)}`);
-          console.log(`      categories: ${JSON.stringify(fc.categories?.map((c: any) => ({ _id: c._id, name: c.name })))}`);
-        });
-
-        if (filterCategoryId) {
-          const testQuery = await Flashcard.countDocuments({ categoryIds: filterCategoryId, isActive: true });
-          console.log(`[Flashcards] DEBUG: Found ${testQuery} flashcards with categoryIds containing "${filterCategoryId}"`);
-
-          // Also check primaryCategory
-          const primaryCatQuery = await Flashcard.countDocuments({ 'primaryCategory._id': filterCategoryId, isActive: true });
-          console.log(`[Flashcards] DEBUG: Found ${primaryCatQuery} flashcards with primaryCategory._id = "${filterCategoryId}"`);
-
-          // Check categories array
-          const categoriesArrayQuery = await Flashcard.countDocuments({ 'categories._id': filterCategoryId, isActive: true });
-          console.log(`[Flashcards] DEBUG: Found ${categoriesArrayQuery} flashcards with categories._id = "${filterCategoryId}"`);
-        }
-
-        if (filterCategoryName) {
-          const nameQuery = await Flashcard.countDocuments({
-            $or: [
-              { 'primaryCategory.name': new RegExp(`^${filterCategoryName}$`, 'i') },
-              { 'categories.name': new RegExp(`^${filterCategoryName}$`, 'i') }
-            ],
-            isActive: true
-          });
-          console.log(`[Flashcards] DEBUG: Found ${nameQuery} flashcards with category name "${filterCategoryName}"`);
-
-          // Check for composite path matches (e.g., "uuid::Name1::Name2::TargetCategory")
-          const escapedName = filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
-          const compositeQuery = await Flashcard.countDocuments({
-            categoryIds: compositePathRegex,
-            isActive: true
-          });
-          console.log(`[Flashcards] DEBUG: Found ${compositeQuery} flashcards with categoryIds ending in "::${filterCategoryName}"`);
-        }
-      }
 
       // Calculate pagination
       const pageNum = page ? parseInt(page as string, 10) : 1;
@@ -869,7 +883,7 @@ export default function (app, express, services) {
       const flashcards = result[0]?.rows || [];
       const total = result[0]?.totalCount[0]?.count || 0;
 
-      res.json({ result: flashcards, count: total, total });
+      res.json({ result: resolveLanguageMany(flashcards, getLang(req)), count: total, total });
     } catch (error: any) {
       console.error('[Flashcards] Get all error:', error);
       res.status(500).json({ error: error.message });
@@ -954,9 +968,78 @@ export default function (app, express, services) {
       if (!flashcard) {
         return res.status(404).json({ error: 'Flashcard not found' });
       }
-      res.json({ result: flashcard });
+      res.json({ result: resolveLanguage(flashcard, getLang(req)) });
     } catch (error: any) {
       console.error('[Flashcards] Get by ID error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ==================== TRANSLATION CRUD ====================
+
+  // Get full card with translations (admin/scripts)
+  router.get('/flashcards/:id/translations', async (req, res) => {
+    try {
+      const card = await Flashcard.findById(req.params.id).lean();
+      if (!card) return res.status(404).json({ error: 'Flashcard not found' });
+      res.json({ result: card });
+    } catch (error: any) {
+      console.error('[Translations] GET error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Set translations for a language
+  router.put('/flashcards/:id/translations/:lang', async (req, res) => {
+    try {
+      const { id, lang } = req.params;
+      const card = await Flashcard.findByIdAndUpdate(
+        id,
+        { $set: { [`translations.${lang}`]: req.body } },
+        { new: true }
+      ).lean();
+      if (!card) return res.status(404).json({ error: 'Flashcard not found' });
+      res.json({ result: card });
+    } catch (error: any) {
+      console.error('[Translations] PUT error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Remove translations for a language
+  router.delete('/flashcards/:id/translations/:lang', async (req, res) => {
+    try {
+      const { id, lang } = req.params;
+      const card = await Flashcard.findByIdAndUpdate(
+        id,
+        { $unset: { [`translations.${lang}`]: 1 } },
+        { new: true }
+      ).lean();
+      if (!card) return res.status(404).json({ error: 'Flashcard not found' });
+      res.json({ result: card });
+    } catch (error: any) {
+      console.error('[Translations] DELETE error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Bulk set translations (for scripts)
+  // Body: { translations: [{ flashcardId, lang, fields: { front, back, ... } }] }
+  router.post('/flashcards/translations/bulk', async (req, res) => {
+    try {
+      const { translations } = req.body;
+      if (!Array.isArray(translations)) return res.status(400).json({ error: 'Expected translations array' });
+
+      const ops = translations.map((t: any) => ({
+        updateOne: {
+          filter: { _id: t.flashcardId },
+          update: { $set: { [`translations.${t.lang}`]: t.fields } }
+        }
+      }));
+      const result = await Flashcard.bulkWrite(ops);
+      res.json({ result: { modified: result.modifiedCount, matched: result.matchedCount } });
+    } catch (error: any) {
+      console.error('[Translations] Bulk error:', error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -1405,14 +1488,20 @@ export default function (app, express, services) {
   // Get study session
   router.get('/study/:userId', async (req, res) => {
     try {
-      const { newLimit, reviewLimit, learningFirst } = req.query;
+      const { newLimit, reviewLimit, learningFirst, categoryId, categoryName } = req.query;
 
       const config: any = {};
-      if (newLimit) config.newCardsLimit = parseInt(newLimit as string, 10);
-      if (reviewLimit) config.reviewCardsLimit = parseInt(reviewLimit as string, 10);
+      if (newLimit !== undefined && newLimit !== '') config.newCardsLimit = parseInt(newLimit as string, 10);
+      if (reviewLimit !== undefined && reviewLimit !== '') config.reviewCardsLimit = parseInt(reviewLimit as string, 10);
       if (learningFirst !== undefined) config.learningFirst = learningFirst === 'true';
+      if (categoryId) config.categoryId = categoryId;
+      if (categoryName) config.categoryName = categoryName;
 
       const session = await studyService.getStudySession(req.params.userId, config);
+      const lang = getLang(req);
+      if (session?.cards) {
+        session.cards = resolveLanguageMany(session.cards, lang);
+      }
       res.json({ result: session });
     } catch (error: any) {
       console.error('[Flashcards] Get study session error:', error);

@@ -1,6 +1,7 @@
 import { Flashcard } from '../models';
 import * as mongoose from 'mongoose';
 import { processChessData, convertLegacyToChessData, ChessData } from '../utils/chess-validation.util';
+import { difficultyRegistry } from './difficulty-classifier';
 
 export class FlashcardService {
     /**
@@ -21,6 +22,11 @@ export class FlashcardService {
         // Check for match content
         if (data.matchPairs && data.matchPairs.length > 0) {
             return { ...data, cardType: 'match' };
+        }
+
+        // Check for code content
+        if (data.codeData && (data.codeData.starterCode || data.codeData.solutionCode)) {
+            return { ...data, cardType: 'code' };
         }
 
         // Check for chess content
@@ -105,6 +111,10 @@ export class FlashcardService {
         let processedData = this.ensureCategoryIds(data);
         processedData = this.processChessFields(processedData);
         processedData = this.inferCardType(processedData);
+        // Auto-classify difficulty if not explicitly provided
+        if (!processedData.difficulty) {
+            processedData.difficulty = difficultyRegistry.classify(processedData);
+        }
         const flashcard = new Flashcard(processedData);
         return await flashcard.save();
     }
@@ -489,7 +499,6 @@ export class FlashcardService {
                 hint,
                 options: question.options,
                 wrongAnswers,
-                difficulty: 3,
                 chessData: {
                     startingFen: chessContext.fen,
                     moves: chessContext.moveHistory || [],
@@ -512,6 +521,7 @@ export class FlashcardService {
             let processed = this.ensureCategoryIds(flashcardData);
             processed = this.processChessFields(processed);
             processed = this.inferCardType(processed);
+            processed.difficulty = difficultyRegistry.classify(processed);
             flashcard = await new Flashcard(processed).save();
             isNew = true;
         } else {
@@ -549,8 +559,34 @@ export class FlashcardService {
         color: 'white' | 'black';
         categoryId?: string;
         categoryName?: string;
+        categories?: Array<{ _id: string; name: string }>;
+        cardType?: string;
+        gameId?: string;
+        name?: string;
+        tags?: string[];
     }, userProgressService: any) {
         const { userId, userEmail, positions, eco, openingName, color, categoryId, categoryName } = data;
+        const resolvedCardType = data.cardType || 'chessOpening';
+        // Prefer full categories array (with correct _ids); fall back to single categoryId/categoryName
+        let resolvedCategories: Array<{ _id: string; name: string }> = data.categories?.length
+            ? data.categories
+            : categoryId ? [{ _id: categoryId, name: categoryName || 'Chess Openings' }] : [];
+
+        // Fallback: if no categories provided, copy from an existing card for this user
+        if (resolvedCategories.length === 0) {
+            const existingCard = await Flashcard.findOne({
+                createdBy: userId,
+                cardType: resolvedCardType,
+                isActive: true,
+                'categories.0': { $exists: true }
+            }).select('categories categoryIds primaryCategory').lean();
+            if (existingCard?.categories?.length) {
+                resolvedCategories = existingCard.categories.map((c: any) => ({ _id: c._id?.toString?.() || c._id, name: c.name }));
+                console.log(`[createFromOpeningLine] Copied categories from existing card: ${JSON.stringify(resolvedCategories)}`);
+            }
+        }
+
+        const resolvedCategoryIds = resolvedCategories.map(c => c._id);
 
         let created = 0;
         let updated = 0;
@@ -564,19 +600,28 @@ export class FlashcardService {
                 'chessData.startingFen': pos.fen,
                 'chessData.openingName': openingName,
                 createdBy: userId,
-                cardType: 'chessOpening',
+                cardType: resolvedCardType,
                 isActive: true
             });
 
             if (existing) {
-                // Ensure user is in the users array
-                await Flashcard.findByIdAndUpdate(existing._id, { $addToSet: { users: userId } });
+                // Ensure user is in the users array + backfill category data if missing
+                const updateOps: any = { $addToSet: { users: userId } };
+                if (resolvedCategories.length > 0) {
+                    const hasCategoryIds = existing.categoryIds?.length > 0;
+                    const hasCategories = existing.categories?.length > 0;
+                    if (!hasCategoryIds) {
+                        updateOps.$addToSet = { ...updateOps.$addToSet, categoryIds: { $each: resolvedCategoryIds } };
+                    }
+                    if (!hasCategories) {
+                        updateOps.$set = { categories: resolvedCategories };
+                    }
+                }
+                await Flashcard.findByIdAndUpdate(existing._id, updateOps);
                 flashcardIds.push(existing._id.toString());
                 updated++;
                 continue;
             }
-
-            const difficulty = Math.min(5, 1 + Math.floor(pos.moveNumber / 4));
 
             const flashcardData: any = {
                 front: `What is the correct move in the ${openingName}?`,
@@ -586,18 +631,22 @@ export class FlashcardService {
                     moves: pos.moveHistory,
                     openingName,
                     orientation: color,
+                    ...(data.gameId ? { gameId: data.gameId } : {}),
                 },
-                cardType: 'chessOpening',
-                tags: ['opening', eco.toLowerCase(), `${color}-opening`].filter(Boolean),
-                difficulty,
+                cardType: resolvedCardType,
+                moveNumber: pos.moveNumber, // passed to classifier
+                tags: data.tags?.length ? data.tags : ['opening', eco.toLowerCase(), `${color}-opening`].filter(Boolean),
+                difficulty: difficultyRegistry.classify({ cardType: 'chessOpening', moveNumber: pos.moveNumber, chessData: { moves: pos.moveHistory } }),
                 canBeQuizzed: true,
                 sourceType: 'imported',
                 createdBy: userId,
                 userEmail,
                 users: [userId],
-                categoryIds: categoryId ? [categoryId] : [],
-                categories: categoryId ? [{ _id: categoryId, name: categoryName || 'Chess Openings' }] : [],
+                categoryIds: resolvedCategoryIds,
+                categories: resolvedCategories,
+                ...(resolvedCategories.length > 0 ? { primaryCategory: resolvedCategories[resolvedCategories.length - 1] } : {}),
                 environment: process.env.ENV_NAME || 'LOCAL',
+                ...(data.name ? { name: data.name } : {}),
             };
 
             let processed = this.ensureCategoryIds(flashcardData);
@@ -620,14 +669,45 @@ export class FlashcardService {
     }
 
     /**
+     * Update a card's difficulty. If the user has no reviews yet, reseed FSRS.
+     */
+    async updateDifficulty(flashcardId: string, difficulty: number, userProgressService: any) {
+        if (difficulty < 1 || difficulty > 5) {
+            throw new Error('Difficulty must be between 1 and 5');
+        }
+
+        const flashcard = await Flashcard.findByIdAndUpdate(
+            flashcardId,
+            { difficulty },
+            { new: true }
+        );
+
+        if (!flashcard) {
+            throw new Error('Flashcard not found');
+        }
+
+        // Reseed FSRS if the user hasn't reviewed this card yet
+        const userId = flashcard.createdBy;
+        if (userId) {
+            const progress = await userProgressService.getProgress(userId, flashcardId);
+            if (progress && (progress.totalReviews || 0) === 0) {
+                progress.fsrsDifficulty = difficulty * 2;
+                await progress.save();
+            }
+        }
+
+        return flashcard;
+    }
+
+    /**
      * Get chessOpening flashcards for a given opening and user.
      * Returns cards sorted by move history length (position order).
      */
-    async getByOpening(openingName: string, userId: string) {
+    async getByOpening(openingName: string, userId: string, cardType?: string) {
         const flashcards = await Flashcard.find({
             'chessData.openingName': openingName,
             createdBy: userId,
-            cardType: 'chessOpening',
+            cardType: cardType || 'chessOpening',
             isActive: true
         }).lean();
 
@@ -639,6 +719,456 @@ export class FlashcardService {
         });
 
         return flashcards;
+    }
+
+    // ============================================
+    // Famous Games (game-type flashcards)
+    // ============================================
+
+    /**
+     * Get all game-type flashcards (public catalog).
+     * Returns cards with cardType='chessGame' that have famousGame metadata.
+     */
+    async getGames(filters?: { difficulty?: string; eco?: string }): Promise<any[]> {
+        const query: any = {
+            isActive: true,
+            cardType: 'chessGame',
+            'famousGame.title': { $exists: true }
+        };
+        if (filters?.difficulty) {
+            query['famousGame.difficulty'] = filters.difficulty;
+        }
+        if (filters?.eco) {
+            query['famousGame.eco'] = filters.eco;
+        }
+        return await Flashcard.find(query).sort({ 'famousGame.order': 1, 'famousGame.year': 1 }).lean();
+    }
+
+    /**
+     * Get a single game flashcard by ID
+     */
+    async getGameById(id: string): Promise<any> {
+        return await Flashcard.findOne({
+            _id: id,
+            isActive: true,
+            cardType: 'chessGame',
+            'famousGame.title': { $exists: true }
+        }).lean();
+    }
+
+    /**
+     * Search games by title, player name, or opening
+     */
+    async searchGames(query: string): Promise<any[]> {
+        const regex = new RegExp(query, 'i');
+        return await Flashcard.find({
+            isActive: true,
+            cardType: 'chessGame',
+            'famousGame.title': { $exists: true },
+            $or: [
+                { 'famousGame.title': regex },
+                { 'famousGame.whitePlayer': regex },
+                { 'famousGame.blackPlayer': regex },
+                { 'famousGame.openingName': regex }
+            ]
+        }).sort({ 'famousGame.order': 1 }).lean();
+    }
+
+    /**
+     * Create a game flashcard (admin/migration).
+     * Sets cardType='chessGame', isPublic=true, and embeds famousGame metadata.
+     */
+    async createGame(gameData: any): Promise<any> {
+        const flashcardData = {
+            front: `${gameData.title} (${gameData.year})`,
+            back: `${gameData.whitePlayer} vs ${gameData.blackPlayer}`,
+            cardType: 'chessGame',
+            isPublic: true,
+            famousGame: {
+                title: gameData.title,
+                whitePlayer: gameData.whitePlayer,
+                blackPlayer: gameData.blackPlayer,
+                year: gameData.year,
+                event: gameData.event,
+                eco: gameData.eco,
+                openingName: gameData.openingName,
+                pgn: gameData.pgn,
+                moveCount: gameData.moveCount,
+                description: gameData.description,
+                themes: gameData.themes || [],
+                difficulty: gameData.difficulty || 'intermediate',
+                order: gameData.order || 0
+            },
+            tags: ['famous-game', gameData.eco?.toLowerCase(), gameData.difficulty].filter(Boolean),
+            categories: gameData.categories || [],
+            categoryIds: gameData.categoryIds || [],
+            sourceType: 'imported',
+            environment: process.env.ENV_NAME || 'LOCAL'
+        };
+
+        let processed = this.ensureCategoryIds(flashcardData);
+        processed = this.inferCardType(processed);
+        const flashcard = new Flashcard(processed);
+        return await flashcard.save();
+    }
+
+    // ============================================
+    // Opening Lines & Lessons (unified opening queries)
+    // ============================================
+
+    /**
+     * Helper: extract opening metadata from either openingLine or openingLesson embedded field
+     */
+    private extractOpeningData(fc: any): any {
+        const ol = fc.openingLine || fc.openingLesson;
+        if (!ol) return null;
+        return {
+            _id: fc._id,
+            eco: ol.eco,
+            name: ol.openingName,
+            variationName: ol.variationName,
+            pgn: ol.pgn,
+            moveCount: ol.moveCount,
+            difficulty: ol.difficulty,
+            order: ol.order,
+            isVariation: ol.isVariation || false,
+            mainOpeningName: ol.mainOpeningName,
+            description: ol.description,
+            title: ol.title
+        };
+    }
+
+    /**
+     * Opening card type filter: matches both openingLine and openingLesson
+     */
+    private get openingCardTypes() {
+        return { $in: ['openingLine', 'openingLesson'] };
+    }
+
+    /**
+     * Get all opening flashcards (public catalog).
+     */
+    async getOpenings(filters?: { difficulty?: string; eco?: string; letter?: string }): Promise<any[]> {
+        const query: any = {
+            isActive: true,
+            cardType: this.openingCardTypes,
+            $or: [{ 'openingLine.eco': { $exists: true } }, { 'openingLesson.eco': { $exists: true } }]
+        };
+        if (filters?.difficulty) {
+            query.$or = [{ 'openingLine.difficulty': filters.difficulty }, { 'openingLesson.difficulty': filters.difficulty }];
+        }
+        if (filters?.eco) {
+            query.$or = [{ 'openingLine.eco': filters.eco }, { 'openingLesson.eco': filters.eco }];
+        }
+        if (filters?.letter) {
+            const letterRegex = new RegExp(`^${filters.letter}`, 'i');
+            query.$or = [{ 'openingLine.eco': letterRegex }, { 'openingLesson.eco': letterRegex }];
+        }
+        return await Flashcard.find(query).sort({ 'openingLine.eco': 1, 'openingLesson.eco': 1 }).lean();
+    }
+
+    /**
+     * Get a single opening flashcard by ID
+     */
+    async getOpeningById(id: string): Promise<any> {
+        return await Flashcard.findOne({
+            _id: id,
+            isActive: true,
+            cardType: this.openingCardTypes
+        }).lean();
+    }
+
+    /**
+     * Search openings by name, ECO code, or variation name
+     */
+    async searchOpenings(query: string): Promise<any[]> {
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'i');
+        return await Flashcard.find({
+            isActive: true,
+            cardType: this.openingCardTypes,
+            $or: [
+                { 'openingLine.openingName': regex },
+                { 'openingLine.eco': regex },
+                { 'openingLine.variationName': regex },
+                { 'openingLesson.openingName': regex },
+                { 'openingLesson.eco': regex },
+                { 'openingLesson.variationName': regex }
+            ]
+        }).sort({ 'openingLine.eco': 1, 'openingLesson.eco': 1 }).lean();
+    }
+
+    /**
+     * Get opening categories aggregated by first letter of ECO code.
+     * Returns { letter, name, count }[] matching current categories API shape.
+     */
+    async getOpeningCategories(): Promise<any[]> {
+        const result = await Flashcard.aggregate([
+            { $match: { isActive: true, cardType: this.openingCardTypes } },
+            { $addFields: { _eco: { $ifNull: ['$openingLine.eco', '$openingLesson.eco'] } } },
+            { $match: { _eco: { $exists: true, $ne: null } } },
+            { $group: {
+                _id: { $substrCP: ['$_eco', 0, 1] },
+                count: { $sum: 1 }
+            }},
+            { $sort: { _id: 1 } }
+        ]);
+
+        const letterNames: Record<string, string> = {
+            'A': 'Flank Openings',
+            'B': 'Semi-Open Games',
+            'C': 'Open Games & French',
+            'D': 'Closed & Semi-Closed Games',
+            'E': 'Indian Defenses'
+        };
+
+        return result.map(r => ({
+            letter: r._id,
+            name: letterNames[r._id] || r._id,
+            count: r.count
+        }));
+    }
+
+    /**
+     * Get openings by letter (first char of ECO), grouped with variations.
+     * Returns { openings: [...] } matching current categories API shape.
+     */
+    async getOpeningsByLetter(letter: string, page = 1, pageSize = 50): Promise<{ openings: any[]; total: number; hasMore: boolean }> {
+        const letterRegex = new RegExp(`^${letter.toUpperCase()}`);
+        const all = await Flashcard.find({
+            isActive: true,
+            cardType: this.openingCardTypes,
+            $or: [{ 'openingLine.eco': letterRegex }, { 'openingLesson.eco': letterRegex }]
+        }).sort({ 'openingLine.eco': 1, 'openingLesson.eco': 1 }).lean();
+
+        // Group main openings with their variations
+        const mainOpenings: any[] = [];
+        const variationMap = new Map<string, any[]>();
+
+        for (const fc of all) {
+            const ol = this.extractOpeningData(fc);
+            if (!ol) continue;
+            if (ol.isVariation && ol.mainOpeningName) {
+                const existing = variationMap.get(ol.mainOpeningName) || [];
+                existing.push({
+                    eco: ol.eco,
+                    name: ol.variationName || ol.name,
+                    pgn: ol.pgn,
+                    isVariation: true,
+                    mainOpeningName: ol.mainOpeningName
+                });
+                variationMap.set(ol.mainOpeningName, existing);
+            } else {
+                mainOpenings.push({
+                    _id: ol._id,
+                    eco: ol.eco,
+                    name: ol.name,
+                    pgn: ol.pgn,
+                    isVariation: false,
+                    variations: []
+                });
+            }
+        }
+
+        // Attach variations to main openings
+        for (const op of mainOpenings) {
+            op.variations = variationMap.get(op.name) || [];
+        }
+
+        const total = mainOpenings.length;
+        const start = (page - 1) * pageSize;
+        const paged = mainOpenings.slice(start, start + pageSize);
+
+        return { openings: paged, total, hasMore: start + pageSize < total };
+    }
+
+    /**
+     * Create an opening-line flashcard (admin/migration).
+     */
+    async createOpening(data: any): Promise<any> {
+        const flashcardData = {
+            front: `${data.openingName || data.name} (${data.eco})`,
+            back: data.pgn || '',
+            cardType: 'openingLine',
+            isPublic: true,
+            openingLine: {
+                eco: data.eco,
+                openingName: data.openingName || data.name,
+                variationName: data.variationName,
+                pgn: data.pgn,
+                moveCount: data.moveCount || (data.pgn ? data.pgn.split(/\s+/).filter((t: string) => !t.match(/^\d+\.$/)).length : 0),
+                difficulty: data.difficulty || 'intermediate',
+                order: data.order || 0,
+                description: data.description,
+                isVariation: data.isVariation || false,
+                mainOpeningName: data.mainOpeningName
+            },
+            tags: ['opening', data.eco?.toLowerCase(), data.eco?.[0]?.toLowerCase()].filter(Boolean),
+            categories: data.categories || [],
+            categoryIds: data.categoryIds || [],
+            sourceType: 'imported',
+            environment: process.env.ENV_NAME || 'LOCAL'
+        };
+
+        let processed = this.ensureCategoryIds(flashcardData);
+        processed = this.inferCardType(processed);
+        const flashcard = new Flashcard(processed);
+        return await flashcard.save();
+    }
+
+    /**
+     * Bulk create opening-line flashcards (for migration).
+     */
+    async bulkCreateOpenings(openings: any[]): Promise<any[]> {
+        const docs = openings.map(data => ({
+            front: `${data.openingName || data.name} (${data.eco})`,
+            back: data.pgn || '',
+            cardType: 'openingLine',
+            isPublic: true,
+            openingLine: {
+                eco: data.eco,
+                openingName: data.openingName || data.name,
+                variationName: data.variationName,
+                pgn: data.pgn,
+                moveCount: data.moveCount || 0,
+                difficulty: data.difficulty || 'intermediate',
+                order: data.order || 0,
+                description: data.description,
+                isVariation: data.isVariation || false,
+                mainOpeningName: data.mainOpeningName
+            },
+            tags: ['opening', data.eco?.toLowerCase(), data.eco?.[0]?.toLowerCase()].filter(Boolean),
+            categories: data.categories || [],
+            categoryIds: data.categoryIds || [],
+            sourceType: 'imported',
+            isActive: true,
+            environment: process.env.ENV_NAME || 'LOCAL'
+        }));
+        return await Flashcard.insertMany(docs);
+    }
+
+    // ============================================
+    // Opening Lessons (openingLesson-type flashcards)
+    // ============================================
+
+    /**
+     * Get opening lessons with optional filters.
+     */
+    async getOpeningLessons(filters?: { eco?: string; difficulty?: string }): Promise<any[]> {
+        const query: any = {
+            isActive: true,
+            cardType: 'openingLesson',
+            'openingLesson.eco': { $exists: true }
+        };
+        if (filters?.eco) {
+            query['openingLesson.eco'] = filters.eco;
+        }
+        if (filters?.difficulty) {
+            query['openingLesson.difficulty'] = filters.difficulty;
+        }
+        return await Flashcard.find(query).sort({ 'openingLesson.eco': 1, 'openingLesson.difficulty': 1, 'openingLesson.order': 1 }).lean();
+    }
+
+    /**
+     * Get opening lessons by ECO code.
+     */
+    async getOpeningLessonsByEco(eco: string): Promise<any[]> {
+        return await Flashcard.find({
+            isActive: true,
+            cardType: 'openingLesson',
+            'openingLesson.eco': eco
+        }).sort({ 'openingLesson.difficulty': 1, 'openingLesson.order': 1 }).lean();
+    }
+
+    /**
+     * Get opening lessons by ECO code and difficulty.
+     */
+    async getOpeningLessonsByEcoAndDifficulty(eco: string, difficulty: string): Promise<any[]> {
+        return await Flashcard.find({
+            isActive: true,
+            cardType: 'openingLesson',
+            'openingLesson.eco': eco,
+            'openingLesson.difficulty': difficulty
+        }).sort({ 'openingLesson.order': 1 }).lean();
+    }
+
+    /**
+     * Search opening lessons by name, eco, title, or variation.
+     */
+    async searchOpeningLessons(query: string): Promise<any[]> {
+        const regex = new RegExp(query, 'i');
+        return await Flashcard.find({
+            isActive: true,
+            cardType: 'openingLesson',
+            $or: [
+                { 'openingLesson.openingName': regex },
+                { 'openingLesson.eco': regex },
+                { 'openingLesson.title': regex },
+                { 'openingLesson.variationName': regex }
+            ]
+        }).sort({ 'openingLesson.eco': 1 }).lean();
+    }
+
+    /**
+     * Create an opening lesson flashcard.
+     */
+    async createOpeningLesson(data: any): Promise<any> {
+        const moveCount = data.moveCount || (data.pgn ? data.pgn.split(/\s+/).filter((t: string) => !t.match(/^\d+\.$/)).length : 0);
+        const flashcardData = {
+            front: data.title || `${data.openingName} - ${data.difficulty}`,
+            back: data.pgn || '',
+            cardType: 'openingLesson',
+            isPublic: true,
+            openingLesson: {
+                eco: data.eco,
+                openingName: data.openingName,
+                variationName: data.variationName,
+                difficulty: data.difficulty || 'beginner',
+                title: data.title,
+                description: data.description,
+                pgn: data.pgn,
+                moveCount,
+                order: data.order || 0
+            },
+            tags: ['opening-lesson', data.eco?.toLowerCase(), data.difficulty].filter(Boolean),
+            sourceType: 'imported',
+            isActive: true,
+            environment: process.env.ENV_NAME || 'LOCAL'
+        };
+
+        const flashcard = new Flashcard(flashcardData);
+        return await flashcard.save();
+    }
+
+    /**
+     * Bulk create opening lesson flashcards (for migration).
+     */
+    async bulkCreateOpeningLessons(lessons: any[]): Promise<any[]> {
+        const docs = lessons.map(data => {
+            const moveCount = data.moveCount || (data.pgn ? data.pgn.split(/\s+/).filter((t: string) => !t.match(/^\d+\.$/)).length : 0);
+            return {
+                front: data.title || `${data.openingName} - ${data.difficulty}`,
+                back: data.pgn || '',
+                cardType: 'openingLesson',
+                isPublic: true,
+                openingLesson: {
+                    eco: data.eco,
+                    openingName: data.openingName,
+                    variationName: data.variationName,
+                    difficulty: data.difficulty || 'beginner',
+                    title: data.title,
+                    description: data.description,
+                    pgn: data.pgn,
+                    moveCount,
+                    order: data.order || 0
+                },
+                tags: ['opening-lesson', data.eco?.toLowerCase(), data.difficulty].filter(Boolean),
+                sourceType: 'imported',
+                isActive: true,
+                environment: process.env.ENV_NAME || 'LOCAL'
+            };
+        });
+        return await Flashcard.insertMany(docs);
     }
 
     /**
@@ -653,8 +1183,8 @@ export class FlashcardService {
 
             console.log('[FLASHCARD-GRID] Request:', { startRow, endRow, limit });
 
-            // Build match stage for filtering
-            const matchStage: any = { isActive: true };
+            // Build match stage for filtering (exclude catalog card types from grid)
+            const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] } };
             const andConditions: any[] = [];
 
             // Apply category filter (hierarchical) with comprehensive ID/name matching
@@ -680,15 +1210,16 @@ export class FlashcardService {
                     );
                 }
 
-                if (gridRequest?.filterCategoryName) {
+                // Only use name-based matching when no category ID is available.
+                // When ID is present, name fallback causes cross-category pollution
+                // when different categories share the same name (e.g., multiple "Traps").
+                if (gridRequest?.filterCategoryName && !gridRequest?.filterCategoryId) {
                     const nameRegex = new RegExp(`^${gridRequest.filterCategoryName}$`, 'i');
                     categoryConditions.push(
                         { 'primaryCategory.name': nameRegex },
                         { 'categories.name': nameRegex }
                     );
 
-                    // Also match composite categoryIds that end with "::CategoryName"
-                    // Escape special regex characters in the name
                     const escapedName = gridRequest.filterCategoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                     const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
                     categoryConditions.push(
