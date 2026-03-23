@@ -46,6 +46,16 @@ export default function (app, express, services) {
     }
   });
 
+  router.get('/decks/by-flashcard/:flashcardId', async (req, res) => {
+    try {
+      const decks = await deckService.findByFlashcardId(req.params.flashcardId);
+      res.json({ result: decks });
+    } catch (err) {
+      console.error('[Decks] GET /decks/by-flashcard/:flashcardId error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
   router.get('/decks/:id', async (req, res) => {
     try {
       const deck = await deckService.getById(req.params.id);
@@ -606,6 +616,58 @@ export default function (app, express, services) {
     }
   });
 
+  // Get cardType counts scoped to a category
+  router.get('/flashcards/card-type-counts', async (req, res) => {
+    try {
+      const { filterCategoryId, filterCategoryName } = req.query;
+      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] } };
+      const andConditions: any[] = [];
+
+      if (filterCategoryId) {
+        let categoryIdVariants: any[] = [filterCategoryId];
+        const mongoose = require('mongoose');
+        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
+          try { categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId)); } catch (e) { /* keep string */ }
+        }
+        andConditions.push({
+          $or: [
+            { categoryIds: { $in: categoryIdVariants } },
+            { 'primaryCategory._id': { $in: categoryIdVariants } },
+            { 'categories._id': { $in: categoryIdVariants } },
+            { categoryId: { $in: categoryIdVariants } }
+          ]
+        });
+      } else if (filterCategoryName) {
+        const escapedName = (filterCategoryName as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const nameRegex = new RegExp(`^${escapedName}$`, 'i');
+        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
+        andConditions.push({
+          $or: [
+            { 'primaryCategory.name': nameRegex },
+            { 'categories.name': nameRegex },
+            { categoryIds: compositePathRegex }
+          ]
+        });
+      }
+
+      if (andConditions.length > 0) {
+        matchStage.$and = andConditions;
+      }
+
+      const pipeline = [
+        { $match: matchStage },
+        { $group: { _id: '$cardType', count: { $sum: 1 } } },
+        { $sort: { count: -1 as const } },
+        { $project: { _id: 0, cardType: '$_id', count: 1 } }
+      ];
+      const result = await Flashcard.aggregate(pipeline);
+      res.json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] GET /flashcards/card-type-counts error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get distinct tags with counts, scoped to category
   router.get('/flashcards/tags', async (req, res) => {
     try {
@@ -664,12 +726,13 @@ export default function (app, express, services) {
   // Get all flashcards with filtering and search (using aggregate pipeline)
   router.get('/flashcards', async (req, res) => {
     try {
-      const { category, categoryId, filterCategoryId, filterCategoryName, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
+      const { category, categoryId, filterCategoryId, filterCategoryName, exactCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
       // Build match stage using shared category-match helper
       const matchStage = buildCategoryMatchStage({
         filterCategoryId: filterCategoryId as string,
         filterCategoryName: filterCategoryName as string,
+        exactCategoryId: exactCategoryId as string,
         userId: userId as string,
       });
 
@@ -679,6 +742,7 @@ export default function (app, express, services) {
         matchStage.categoryId = categoryId;
       }
       if (tag) matchStage.tags = tag;
+      if (req.query.cardType) matchStage.cardType = req.query.cardType;
 
       // Search filter (GET /flashcards specific)
       if (search && (search as string).trim()) {
@@ -1485,6 +1549,47 @@ export default function (app, express, services) {
 
   // ==================== STUDY SESSIONS ====================
 
+  // Get next card (per-card fetch model)
+  router.post('/study/:userId/next', async (req, res) => {
+    try {
+      const result = await studyService.getNextCard(req.params.userId, req.body);
+      const lang = getLang(req);
+      if (result?.card) {
+        result.card = resolveLanguage(result.card, lang);
+      }
+      res.json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Get next card error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get due counts per category
+  router.get('/study/:userId/due-counts', async (req, res) => {
+    try {
+      const categoryIds = req.query.categoryIds
+        ? (Array.isArray(req.query.categoryIds)
+          ? req.query.categoryIds as string[]
+          : (req.query.categoryIds as string).split(','))
+        : [];
+      const result = await studyService.getDueCounts(req.params.userId, categoryIds);
+      res.json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Get due counts error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get study suggestions
+  router.get('/study/:userId/suggestions', async (req, res) => {
+    try {
+      const result = await studyService.getStudySuggestions(req.params.userId);
+      res.json({ result });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get study session
   router.get('/study/:userId', async (req, res) => {
     try {
@@ -1599,11 +1704,14 @@ export default function (app, express, services) {
   // ==================== ANALYTICS ====================
 
   // Get analytics dashboard summary
-  // Optional query param: categoryId - filter analytics to specific category
+  // Optional query params: categoryId (single) or categoryIds (comma-separated) - filter analytics to specific categories
   router.get('/analytics/:userId/summary', async (req, res) => {
     try {
+      const categoryIds = req.query.categoryIds as string | undefined;
       const categoryId = req.query.categoryId as string | undefined;
-      const summary = await analyticsService.getSummary(req.params.userId, categoryId);
+      // Support both: comma-separated categoryIds or single categoryId
+      const ids = categoryIds ? categoryIds.split(',').map(s => s.trim()).filter(Boolean) : (categoryId ? [categoryId] : undefined);
+      const summary = await analyticsService.getSummary(req.params.userId, ids);
       res.json({ result: summary });
     } catch (error: any) {
       console.error('[Flashcards] Get analytics summary error:', error);

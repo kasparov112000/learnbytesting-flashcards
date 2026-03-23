@@ -15,15 +15,19 @@ export class AnalyticsService {
      * @param userId User ID
      * @param categoryId Optional category ID to filter by
      */
-    async getSummary(userId: string, categoryId?: string) {
+    async getSummary(userId: string, categoryIds?: string | string[]) {
+        // Normalize to array or undefined
+        const catIds = Array.isArray(categoryIds) ? categoryIds : (categoryIds ? [categoryIds] : undefined);
+        const isFiltered = catIds && catIds.length > 0;
+
         // Get or create user analytics
         const analytics = await (UserAnalytics as any).getOrCreate(userId);
 
-        // Get current streak (category-specific if categoryId provided)
-        const streakData = await (DailyActivity as any).calculateStreak(userId, categoryId);
+        // Get current streak (category-specific if filtered)
+        const streakData = await (DailyActivity as any).calculateStreak(userId, catIds?.[0]);
 
         // Update streak in analytics if changed (only for global analytics)
-        if (!categoryId && streakData.currentStreak !== analytics.currentStreak) {
+        if (!isFiltered && streakData.currentStreak !== analytics.currentStreak) {
             analytics.currentStreak = streakData.currentStreak;
             analytics.lastStudyDate = streakData.lastStudyDate;
             if (streakData.currentStreak > analytics.longestStreak) {
@@ -40,10 +44,10 @@ export class AnalyticsService {
 
         // Build query filter for category using hierarchical filtering via flashcard IDs
         let flashcardIds: any[] | null = null;
-        if (categoryId) {
-            // Get all flashcard IDs that belong to this category hierarchy
+        if (isFiltered) {
+            // Get all flashcard IDs that belong to any of the specified categories
             const flashcards = await Flashcard.find(
-                { categoryIds: categoryId, isActive: { $ne: false } },
+                { categoryIds: { $in: catIds }, isActive: { $ne: false } },
                 { _id: 1 }
             ).lean();
             flashcardIds = flashcards.map((f: any) => f._id);
@@ -55,19 +59,33 @@ export class AnalyticsService {
             cardQuery.flashcardId = { $in: flashcardIds };
         }
 
-        // Get total cards in system for this user (filtered by category if provided)
-        const totalCards = await UserProgress.countDocuments(cardQuery);
+        // Get total available flashcards (from Flashcard collection, not UserProgress)
+        let totalCards: number;
+        if (flashcardIds !== null) {
+            // Category-filtered: we already have the full list of matching flashcard IDs
+            totalCards = flashcardIds.length;
+        } else {
+            // Unfiltered: count all active flashcards in the system
+            totalCards = await Flashcard.countDocuments({ isActive: { $ne: false } });
+        }
+
+        // Count cards with UserProgress records (cards the user has interacted with)
+        const cardsWithProgress = await UserProgress.countDocuments(cardQuery);
 
         // Get mastered cards (stability >= 21 days)
         const masteredQuery = { ...cardQuery, stability: { $gte: 21 } };
         const masteredCards = await UserProgress.countDocuments(masteredQuery);
 
-        // Get new cards (state = 'new' or fsrsState = 0)
-        const newCardsQuery = { ...cardQuery, $or: [{ state: 'new' }, { fsrsState: 0 }] };
-        const newCards = await UserProgress.countDocuments(newCardsQuery);
+        // Get FSRS-new cards (have a UserProgress record with state = 'new' or fsrsState = 0)
+        const fsrsNewQuery = { ...cardQuery, $or: [{ state: 'new' }, { fsrsState: 0 }] };
+        const fsrsNewCards = await UserProgress.countDocuments(fsrsNewQuery);
 
-        // Get studying cards (not new and not mastered)
-        const studyingCards = totalCards - masteredCards - newCards;
+        // True new cards = flashcards that have NO UserProgress record at all + FSRS-new
+        const unseenCards = totalCards - cardsWithProgress;
+        const newCards = unseenCards + fsrsNewCards;
+
+        // Get studying cards (have progress, not mastered, not fsrs-new)
+        const studyingCards = cardsWithProgress - masteredCards - fsrsNewCards;
 
         // Get cards due for review (nextReviewDate <= now)
         const now = new Date();
@@ -83,10 +101,11 @@ export class AnalyticsService {
         };
 
         if (todayActivity) {
-            if (categoryId) {
+            if (isFiltered) {
                 // Get category-specific stats from today's activity
+                const catIdSet = new Set(catIds);
                 const catStats = todayActivity.categories?.find(
-                    (c: any) => c.categoryId === categoryId
+                    (c: any) => catIdSet.has(c.categoryId)
                 );
                 if (catStats) {
                     todayStats = {
@@ -117,12 +136,12 @@ export class AnalyticsService {
         let studyHours = Math.round((analytics.totalStudyTimeMs / 3600000) * 10) / 10;
         let ratingDistribution = analytics.ratingDistribution;
 
-        if (categoryId) {
+        if (isFiltered) {
             // Aggregate category-specific stats from daily activities
             const categoryAggregation = await DailyActivity.aggregate([
                 { $match: { userId } },
                 { $unwind: '$categories' },
-                { $match: { 'categories.categoryId': categoryId } },
+                { $match: { 'categories.categoryId': { $in: catIds } } },
                 {
                     $group: {
                         _id: null,
@@ -143,7 +162,7 @@ export class AnalyticsService {
 
         return {
             currentStreak: streakData.currentStreak,
-            longestStreak: categoryId ? streakData.currentStreak : analytics.longestStreak,
+            longestStreak: isFiltered ? streakData.currentStreak : analytics.longestStreak,
             lastStudyDate: streakData.lastStudyDate || analytics.lastStudyDate,
             totalCards: totalCards,
             masteredCards: masteredCards,
@@ -154,8 +173,8 @@ export class AnalyticsService {
             studyHours: studyHours,
             hoursStudied: studyHours,  // Alias for frontend compatibility
             cardsToday: todayStats.cardsReviewed,
-            averageRetention: categoryId ? 0 : analytics.getOverallAccuracy(),  // Accuracy as retention metric
-            overallAccuracy: categoryId ? 0 : analytics.getOverallAccuracy(),
+            averageRetention: isFiltered ? 0 : analytics.getOverallAccuracy(),  // Accuracy as retention metric
+            overallAccuracy: isFiltered ? 0 : analytics.getOverallAccuracy(),
             overallMastery: totalCards > 0
                 ? Math.round((masteredCards / totalCards) * 1000) / 10
                 : 0,
@@ -624,7 +643,7 @@ export class AnalyticsService {
             ...(tagType ? [{ $match: { 'weaknessTagData.type': tagType } }] : []),
             {
                 $lookup: {
-                    from: 'userprogresses',
+                    from: 'user_progress',
                     let: { flashcardId: '$_id' },
                     pipeline: [
                         {

@@ -7,6 +7,11 @@
 interface CategoryMatchOptions {
   filterCategoryId?: string;
   filterCategoryName?: string;
+  filterCategoryIds?: string[];
+  /** Match only primaryCategory._id (excludes children categories) */
+  exactCategoryId?: string;
+  filterTags?: string[];
+  filterFlashcardIds?: string[];
   userId?: string;
   /** If true, excludes openingLine cardType (default: true) */
   excludeOpeningLines?: boolean;
@@ -24,11 +29,15 @@ export function buildCategoryMatchStage(options: CategoryMatchOptions = {}): any
   const {
     filterCategoryId,
     filterCategoryName,
+    filterCategoryIds,
+    exactCategoryId,
+    filterTags,
+    filterFlashcardIds,
     userId,
     excludeOpeningLines = true,
   } = options;
 
-  const matchStage: any = { isActive: true };
+  const matchStage: any = { isActive: { $ne: false } };
   if (excludeOpeningLines) {
     matchStage.cardType = { $nin: ['openingLine'] };
   }
@@ -75,12 +84,68 @@ export function buildCategoryMatchStage(options: CategoryMatchOptions = {}): any
     });
   }
 
+  // Exact category filtering — matches only primaryCategory (no children)
+  if (exactCategoryId) {
+    let exactIdVariants: any[] = [exactCategoryId];
+    const mongoose = require('mongoose');
+    if (mongoose.Types.ObjectId.isValid(exactCategoryId)) {
+      try {
+        exactIdVariants.push(new mongoose.Types.ObjectId(exactCategoryId));
+      } catch (_e) { /* keep string only */ }
+    }
+    andConditions.push({ 'primaryCategory._id': { $in: exactIdVariants } });
+  }
+
+  // Multi-category filtering (array of category IDs)
+  if (filterCategoryIds && filterCategoryIds.length > 0) {
+    const mongoose = require('mongoose');
+    const allVariants: any[] = [];
+    for (const id of filterCategoryIds) {
+      allVariants.push(id);
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        try {
+          allVariants.push(new mongoose.Types.ObjectId(id));
+        } catch (_e) { /* keep string only */ }
+      }
+    }
+    andConditions.push({
+      $or: [
+        { categoryIds: { $in: allVariants } },
+        { 'primaryCategory._id': { $in: allVariants } },
+        { 'categories._id': { $in: allVariants } },
+        { categoryId: { $in: allVariants } },
+      ],
+    });
+  }
+
+  // Tag filtering
+  if (filterTags && filterTags.length > 0) {
+    andConditions.push({ tags: { $in: filterTags } });
+  }
+
+  // Flashcard ID filtering (for lesson-scoped study)
+  if (filterFlashcardIds && filterFlashcardIds.length > 0) {
+    const mongoose = require('mongoose');
+    const objectIds = filterFlashcardIds.map(id => {
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        try { return new mongoose.Types.ObjectId(id); } catch (_e) { /* fall through */ }
+      }
+      return id;
+    });
+    andConditions.push({ _id: { $in: objectIds } });
+  }
+
   // User visibility filter
+  // Cards are visible if:
+  //   - Created by this user (private cards), OR
+  //   - Explicitly public (isPublic: true), OR
+  //   - isPublic not set (platform/script-created content — treated as accessible)
+  // Only cards with isPublic: false are truly hidden from non-owners.
   if (userId) {
     andConditions.push({
       $or: [
         { createdBy: userId },
-        { isPublic: true },
+        { isPublic: { $ne: false } },
       ],
     });
   }

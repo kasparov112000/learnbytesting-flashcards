@@ -1,6 +1,7 @@
-import { UserProgress } from '../models';
+import { UserProgress, Flashcard } from '../models';
 import * as mongoose from 'mongoose';
 import { FSRSService, Rating, State } from './fsrs.service';
+import { MASTERY_STABILITY_THRESHOLD } from '../utils/constants';
 
 export class UserProgressService {
     private fsrsService: FSRSService;
@@ -24,13 +25,24 @@ export class UserProgressService {
         });
 
         if (!progress) {
+            // Seed FSRS difficulty from the card's classified difficulty (1-5 → 2-10)
+            let seedDifficulty = 0;
+            try {
+                const flashcard = await Flashcard.findById(flashcardObjectId).select('difficulty').lean();
+                if (flashcard?.difficulty) {
+                    seedDifficulty = flashcard.difficulty * 2; // 1→2, 2→4, 3→6, 4→8, 5→10
+                }
+            } catch (err) {
+                // Non-critical — fall back to 0 (FSRS will learn from reviews)
+            }
+
             progress = new UserProgress({
                 userId: userId,
                 flashcardId: flashcardObjectId,
-                algorithm: 'fsrs',  // Default to FSRS for new cards
+                algorithm: 'fsrs',
                 fsrsState: State.New,
                 stability: 0,
-                fsrsDifficulty: 0
+                fsrsDifficulty: seedDifficulty
             });
             await progress.save();
         }
@@ -135,7 +147,7 @@ export class UserProgressService {
         progress.lastQuality = rating;
 
         // Update mastered state for high stability
-        if (updatedFields.stability > 30 && updatedFields.scheduled_days > 21) {
+        if (updatedFields.stability >= MASTERY_STABILITY_THRESHOLD && updatedFields.scheduled_days > 21) {
             progress.state = 'mastered';
         }
 

@@ -1,6 +1,7 @@
 import { Deck } from '../models/deck.model';
 import { Flashcard } from '../models/flashcard.model';
 import { UserProgress } from '../models/user-progress.model';
+import { MASTERY_STABILITY_THRESHOLD } from '../utils/constants';
 import * as mongoose from 'mongoose';
 
 export class DeckService {
@@ -98,8 +99,8 @@ export class DeckService {
                 case 3: learning++; break; // relearning counts as learning
             }
 
-            // Mastered heuristic: stability > 30 days and in Review state
-            if (state === 2 && progress.stability > 30) {
+            // Mastered heuristic: stability >= MASTERY_STABILITY_THRESHOLD and in Review state
+            if (state === 2 && progress.stability >= MASTERY_STABILITY_THRESHOLD) {
                 mastered++;
             }
 
@@ -204,6 +205,10 @@ export class DeckService {
      * Uses FlashcardService.createFromOpeningLine to create/dedup chessOpening flashcards,
      * then wraps them in a Deck.
      */
+    async findByFlashcardId(flashcardId: string) {
+        return await Deck.find({ flashcardIds: flashcardId, isActive: true });
+    }
+
     async createFromRepertoire(data: {
         userId: string;
         userEmail?: string;

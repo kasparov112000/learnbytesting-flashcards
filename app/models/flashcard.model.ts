@@ -24,10 +24,16 @@ const FlashcardSchema = new Schema({
         type: String
     },
 
+    // Optional display name (e.g., user-created variant name)
+    name: {
+        type: String,
+        default: null
+    },
+
     // Explicit card type for type-aware rendering, filtering, and per-type UI
     cardType: {
         type: String,
-        enum: ['text', 'multipleChoice', 'trueFalse', 'chessPuzzle', 'chessOpening', 'match'],
+        enum: ['text', 'multipleChoice', 'trueFalse', 'chessPuzzle', 'chessOpening', 'chessGame', 'match', 'openingLine', 'openingLesson', 'code', 'fillInBlanks', 'insight', 'order'],
         default: 'text',
         index: true
     },
@@ -141,7 +147,95 @@ const FlashcardSchema = new Schema({
         // Validation status (set by server)
         isValid: { type: Boolean },
         // Validation error if invalid
-        validationError: { type: String }
+        validationError: { type: String },
+        // Reference to famous_games collection document
+        gameId: { type: String },
+        // Per-move commentary for instructional mode (index 0 = move 1, etc.)
+        commentary: [{ type: String }]
+    },
+
+    // Famous game metadata (embedded on game-type flashcards)
+    // Each game = 1 flashcard for FSRS; the whole game's accuracy determines the rating
+    famousGame: {
+        title: { type: String },
+        whitePlayer: { type: String },
+        blackPlayer: { type: String },
+        year: { type: Number },
+        event: { type: String },
+        eco: { type: String },
+        openingName: { type: String },
+        pgn: { type: String },
+        moveCount: { type: Number },
+        description: { type: String },
+        themes: [{ type: String }],
+        difficulty: { type: String, enum: ['beginner', 'intermediate', 'advanced'] },
+        order: { type: Number, default: 0 }
+    },
+
+    // Opening line metadata (embedded on opening-type flashcards)
+    // Each opening = 1 flashcard for browsing/FSRS; analogous to famousGame for games
+    openingLine: {
+        eco: { type: String },
+        openingName: { type: String },
+        variationName: { type: String },
+        pgn: { type: String },
+        moveCount: { type: Number },
+        difficulty: { type: String, enum: ['beginner', 'intermediate', 'advanced'] },
+        order: { type: Number, default: 0 },
+        description: { type: String },
+        isVariation: { type: Boolean, default: false },
+        mainOpeningName: { type: String }
+    },
+
+    // Opening lesson metadata (difficulty-tiered guided practice)
+    openingLesson: {
+        eco: { type: String },
+        openingName: { type: String },
+        variationName: { type: String },
+        difficulty: { type: String, enum: ['beginner', 'intermediate', 'advanced'] },
+        title: { type: String },
+        description: { type: String },
+        pgn: { type: String },
+        moveCount: { type: Number },
+        order: { type: Number, default: 0 }
+    },
+
+    // Code exercise data (for code-type flashcards)
+    codeData: {
+        language: { type: String, default: 'typescript' },
+        mode: { type: String, enum: ['fillBlank', 'editor'], default: 'fillBlank' },
+        starterCode: { type: String },
+        solutionCode: { type: String },
+        blanks: [{
+            id: { type: String },
+            answer: { type: String },
+            acceptedAnswers: [{ type: String }]
+        }],
+        explanation: { type: String }
+    },
+
+    // Fill-in-the-blanks data (for fillInBlanks-type flashcards)
+    // Text contains {{n}} placeholders that map to blanks[n]
+    fillInBlanksData: {
+        text: { type: String },          // e.g. "It is classified as a {{0}}, like the {{1}} and {{2}}"
+        blanks: [{
+            id: { type: String },
+            answer: { type: String },     // correct answer text
+            options: [{ type: String }]   // dropdown choices (includes correct answer)
+        }],
+        explanation: { type: String }
+    },
+
+    // Order/sequence data (for order-type flashcards)
+    // User arranges items in the correct sequence
+    orderData: {
+        prompt: { type: String },
+        items: [{
+            id: { type: String },
+            content: { type: String }
+        }],
+        correctOrder: [{ type: String }],
+        explanation: { type: String }
     },
 
     // Chess-specific fields - LEGACY (for backward compatibility)
@@ -239,6 +333,21 @@ const FlashcardSchema = new Schema({
     environment: {
         type: String,
         default: 'PROD'
+    },
+
+    // Multi-language translations
+    // Key: ISO language code ('es', 'fr', 'de', etc.)
+    // Value: object with any subset of translatable fields — missing ones fall back to English
+    translations: {
+        type: Map,
+        of: Schema.Types.Mixed,
+        default: undefined
+    },
+
+    // Language of top-level fields (default 'en')
+    defaultLanguage: {
+        type: String,
+        default: 'en'
     }
 }, {
     timestamps: true,
@@ -257,6 +366,10 @@ FlashcardSchema.index({ linkedQuestionId: 1 });
 FlashcardSchema.index({ canBeQuizzed: 1, isActive: 1 });
 FlashcardSchema.index({ users: 1, isActive: 1 });  // Query flashcards by user
 FlashcardSchema.index({ userEmail: 1, isActive: 1 });  // Query flashcards by email
+FlashcardSchema.index({ 'famousGame.title': 1, isActive: 1 });  // Famous game lookup
+FlashcardSchema.index({ 'openingLine.eco': 1, isActive: 1 });  // Opening line lookup by ECO
+FlashcardSchema.index({ 'openingLine.openingName': 1, isActive: 1 });  // Opening line lookup by name
+FlashcardSchema.index({ 'openingLesson.eco': 1, 'openingLesson.difficulty': 1, isActive: 1 });  // Opening lesson lookup
 
 // Weakness tag indexes for analytics
 FlashcardSchema.index({ weaknessTags: 1 });
