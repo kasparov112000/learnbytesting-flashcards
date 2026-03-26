@@ -616,6 +616,60 @@ export default function (app, express, services) {
     }
   });
 
+  // Batch count of active flashcards per category ID (single DB call)
+  router.post('/flashcards/counts-by-category-ids', async (req, res) => {
+    try {
+      const { categoryIds } = req.body;
+      if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
+        return res.json({ result: {} });
+      }
+
+      const mongoose = require('mongoose');
+      // Build variants: keep string form + ObjectId form for each ID
+      const idVariants: any[] = [];
+      for (const id of categoryIds) {
+        idVariants.push(id);
+        if (mongoose.Types.ObjectId.isValid(id)) {
+          try { idVariants.push(new mongoose.Types.ObjectId(id)); } catch (_) { /* keep string */ }
+        }
+      }
+
+      const pipeline = [
+        { $match: { isActive: true, categoryIds: { $in: idVariants } } },
+        { $unwind: '$categoryIds' },
+        { $match: { categoryIds: { $in: idVariants } } },
+        { $group: { _id: '$categoryIds', count: { $sum: 1 } } }
+      ];
+      const rows = await Flashcard.aggregate(pipeline);
+
+      // Collapse ObjectId and string forms into the original string keys
+      const counts: Record<string, number> = {};
+      for (const id of categoryIds) {
+        counts[id] = 0;
+      }
+      for (const row of rows) {
+        const key = String(row._id);
+        // Match back to original categoryIds (string comparison)
+        if (counts.hasOwnProperty(key)) {
+          counts[key] += row.count;
+        } else {
+          // ObjectId may serialize differently — try matching all original IDs
+          for (const id of categoryIds) {
+            if (String(row._id) === String(id) || (mongoose.Types.ObjectId.isValid(id) && String(row._id) === String(new mongoose.Types.ObjectId(id)))) {
+              counts[id] += row.count;
+              break;
+            }
+          }
+        }
+      }
+
+      res.json({ result: counts });
+    } catch (error: any) {
+      console.error('[Flashcards] POST /flashcards/counts-by-category-ids error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get cardType counts scoped to a category
   router.get('/flashcards/card-type-counts', async (req, res) => {
     try {

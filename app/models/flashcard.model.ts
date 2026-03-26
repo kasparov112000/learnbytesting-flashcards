@@ -33,7 +33,7 @@ const FlashcardSchema = new Schema({
     // Explicit card type for type-aware rendering, filtering, and per-type UI
     cardType: {
         type: String,
-        enum: ['text', 'multipleChoice', 'trueFalse', 'chessPuzzle', 'chessOpening', 'chessGame', 'match', 'openingLine', 'openingLesson', 'code', 'fillInBlanks', 'insight', 'order'],
+        enum: ['text', 'multipleChoice', 'trueFalse', 'chessPuzzle', 'chessOpening', 'chessGame', 'match', 'openingLine', 'openingLesson', 'interactiveGame', 'code', 'fillInBlanks', 'insight', 'order'],
         default: 'text',
         index: true
     },
@@ -151,7 +151,14 @@ const FlashcardSchema = new Schema({
         // Reference to famous_games collection document
         gameId: { type: String },
         // Per-move commentary for instructional mode (index 0 = move 1, etc.)
-        commentary: [{ type: String }]
+        commentary: [{ type: String }],
+        // Variant lines branching from the main sequence
+        variants: [{
+            name: { type: String },
+            branchAtMove: { type: Number },
+            moves: [{ type: String }],
+            commentary: [{ type: String }]
+        }]
     },
 
     // Famous game metadata (embedded on game-type flashcards)
