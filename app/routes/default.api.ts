@@ -562,42 +562,15 @@ export default function (app, express, services) {
   // Get distinct categories with counts from flashcard data
   router.get('/flashcards/categories', async (req, res) => {
     try {
-      const { filterCategoryId, filterCategoryName } = req.query;
-      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] } };
-      const andConditions: any[] = [];
-
-      // Scope to parent category if provided (same logic as tags/flashcards endpoints)
-      if (filterCategoryId) {
-        let categoryIdVariants: any[] = [filterCategoryId];
-        const mongoose = require('mongoose');
-        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
-          try { categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId)); } catch (e) { /* keep string */ }
-        }
-        const categoryConditions: any[] = [
-          { categoryIds: { $in: categoryIdVariants } },
-          { 'primaryCategory._id': { $in: categoryIdVariants } },
-          { 'categories._id': { $in: categoryIdVariants } },
-          { categoryId: { $in: categoryIdVariants } }
-        ];
-        // When ID is available, only match by ID — skip name fallback to avoid
-        // cross-category pollution when different categories share the same name.
-        andConditions.push({ $or: categoryConditions });
-      } else if (filterCategoryName) {
-        const escapedName = (filterCategoryName as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const nameRegex = new RegExp(`^${escapedName}$`, 'i');
-        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
-        andConditions.push({
-          $or: [
-            { 'primaryCategory.name': nameRegex },
-            { 'categories.name': nameRegex },
-            { categoryIds: compositePathRegex }
-          ]
-        });
-      }
-
-      if (andConditions.length > 0) {
-        matchStage.$and = andConditions;
-      }
+      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName } = req.query;
+      const parsedFilterCategoryIds = filterCategoryIdsRaw
+        ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
+        : undefined;
+      const matchStage = buildCategoryMatchStage({
+        filterCategoryId: filterCategoryId as string,
+        filterCategoryIds: parsedFilterCategoryIds,
+        filterCategoryName: filterCategoryName as string,
+      });
 
       // Unwind the categories array and group by _id + name
       const pipeline = [
@@ -673,40 +646,15 @@ export default function (app, express, services) {
   // Get cardType counts scoped to a category
   router.get('/flashcards/card-type-counts', async (req, res) => {
     try {
-      const { filterCategoryId, filterCategoryName } = req.query;
-      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] } };
-      const andConditions: any[] = [];
-
-      if (filterCategoryId) {
-        let categoryIdVariants: any[] = [filterCategoryId];
-        const mongoose = require('mongoose');
-        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
-          try { categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId)); } catch (e) { /* keep string */ }
-        }
-        andConditions.push({
-          $or: [
-            { categoryIds: { $in: categoryIdVariants } },
-            { 'primaryCategory._id': { $in: categoryIdVariants } },
-            { 'categories._id': { $in: categoryIdVariants } },
-            { categoryId: { $in: categoryIdVariants } }
-          ]
-        });
-      } else if (filterCategoryName) {
-        const escapedName = (filterCategoryName as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const nameRegex = new RegExp(`^${escapedName}$`, 'i');
-        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
-        andConditions.push({
-          $or: [
-            { 'primaryCategory.name': nameRegex },
-            { 'categories.name': nameRegex },
-            { categoryIds: compositePathRegex }
-          ]
-        });
-      }
-
-      if (andConditions.length > 0) {
-        matchStage.$and = andConditions;
-      }
+      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName } = req.query;
+      const parsedFilterCategoryIds = filterCategoryIdsRaw
+        ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
+        : undefined;
+      const matchStage = buildCategoryMatchStage({
+        filterCategoryId: filterCategoryId as string,
+        filterCategoryIds: parsedFilterCategoryIds,
+        filterCategoryName: filterCategoryName as string,
+      });
 
       const pipeline = [
         { $match: matchStage },
@@ -725,42 +673,17 @@ export default function (app, express, services) {
   // Get distinct tags with counts, scoped to category
   router.get('/flashcards/tags', async (req, res) => {
     try {
-      const { filterCategoryId, filterCategoryName } = req.query;
-      const matchStage: any = { isActive: true, cardType: { $nin: ['openingLine'] }, tags: { $exists: true, $ne: [] } };
-      const andConditions: any[] = [];
-
-      // Reuse same category filtering logic as main GET /flashcards
-      if (filterCategoryId) {
-        let categoryIdVariants: any[] = [filterCategoryId];
-        const mongoose = require('mongoose');
-        if (mongoose.Types.ObjectId.isValid(filterCategoryId)) {
-          try { categoryIdVariants.push(new mongoose.Types.ObjectId(filterCategoryId)); } catch (e) { /* keep string */ }
-        }
-        const categoryConditions: any[] = [
-          { categoryIds: { $in: categoryIdVariants } },
-          { 'primaryCategory._id': { $in: categoryIdVariants } },
-          { 'categories._id': { $in: categoryIdVariants } },
-          { categoryId: { $in: categoryIdVariants } }
-        ];
-        // When ID is available, only match by ID — skip name fallback to avoid
-        // cross-category pollution when different categories share the same name.
-        andConditions.push({ $or: categoryConditions });
-      } else if (filterCategoryName) {
-        const escapedName = (filterCategoryName as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const nameRegex = new RegExp(`^${escapedName}$`, 'i');
-        const compositePathRegex = new RegExp(`::${escapedName}$`, 'i');
-        andConditions.push({
-          $or: [
-            { 'primaryCategory.name': nameRegex },
-            { 'categories.name': nameRegex },
-            { categoryIds: compositePathRegex }
-          ]
-        });
-      }
-
-      if (andConditions.length > 0) {
-        matchStage.$and = andConditions;
-      }
+      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName } = req.query;
+      const parsedFilterCategoryIds = filterCategoryIdsRaw
+        ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
+        : undefined;
+      const matchStage = buildCategoryMatchStage({
+        filterCategoryId: filterCategoryId as string,
+        filterCategoryIds: parsedFilterCategoryIds,
+        filterCategoryName: filterCategoryName as string,
+      });
+      // Tags endpoint additionally requires tags to exist
+      matchStage.tags = { $exists: true, $ne: [] };
 
       const pipeline = [
         { $match: matchStage },
@@ -780,11 +703,17 @@ export default function (app, express, services) {
   // Get all flashcards with filtering and search (using aggregate pipeline)
   router.get('/flashcards', async (req, res) => {
     try {
-      const { category, categoryId, filterCategoryId, filterCategoryName, exactCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
+      const { category, categoryId, filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, exactCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
+
+      // Parse filterCategoryIds (comma-separated string → array)
+      const filterCategoryIds = filterCategoryIdsRaw
+        ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
+        : undefined;
 
       // Build match stage using shared category-match helper
       const matchStage = buildCategoryMatchStage({
         filterCategoryId: filterCategoryId as string,
+        filterCategoryIds,
         filterCategoryName: filterCategoryName as string,
         exactCategoryId: exactCategoryId as string,
         userId: userId as string,
