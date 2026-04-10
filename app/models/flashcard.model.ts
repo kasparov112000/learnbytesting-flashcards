@@ -158,6 +158,40 @@ const FlashcardSchema = new Schema({
             branchAtMove: { type: Number },
             moves: [{ type: String }],
             commentary: [{ type: String }]
+        }],
+        // Position-linked insights for richer per-move commentary (multiple entries per position)
+        // Each entry holds multiple insight texts at a specific FEN/moveIndex
+        positionInsights: [{
+            // FEN of the position where insights are displayed
+            fen: { type: String, required: true },
+            // 0-based index in the moves array (for ordering)
+            moveIndex: { type: Number },
+            // Array of insight entries for this position
+            insights: [{
+                // Unique identifier (auto-generated UUID)
+                id: { type: String },
+                // Insight/commentary text
+                text: { type: String }
+            }]
+        }],
+        // Position-linked Q/A for concept review at specific positions
+        // Each entry ties questions to a FEN/moveIndex, enabling self-evaluation mode
+        positionQuestions: [{
+            // FEN of the position where questions are asked
+            fen: { type: String, required: true },
+            // 0-based index in the moves array (for ordering)
+            moveIndex: { type: Number },
+            // Array of Q/A pairs for this position
+            questions: [{
+                // Unique identifier (auto-generated UUID)
+                id: { type: String },
+                // Question text (e.g., "What is White's strategic plan here?")
+                question: { type: String },
+                // Answer text (e.g., "Control the center with d4...")
+                answer: { type: String },
+                // When true, this question displays BEFORE the move is played (default: after)
+                askBefore: { type: Boolean, default: false }
+            }]
         }]
     },
 
@@ -289,6 +323,11 @@ const FlashcardSchema = new Schema({
         type: String
     }],
 
+    // The correct answer for multipleChoice cards (must match one of the options)
+    correctAnswer: {
+        type: String
+    },
+
     // Wrong answers only (for quick quiz generation without re-parsing)
     wrongAnswers: [{
         type: String
@@ -355,6 +394,18 @@ const FlashcardSchema = new Schema({
     defaultLanguage: {
         type: String,
         default: 'en'
+    },
+
+    // ============ View Tracking ============
+    // Incremented each time a user views this card (before submitting a review)
+    viewCount: {
+        type: Number,
+        default: 0
+    },
+    // Last time the card was viewed
+    lastViewedAt: {
+        type: Date,
+        default: null
     }
 }, {
     timestamps: true,

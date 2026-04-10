@@ -3,6 +3,23 @@ import { Chess } from 'chess.js';
 /**
  * Chess data structure for flashcards
  */
+/** Single Q/A pair for a position */
+export interface PositionQuestionItem {
+    id: string;
+    question: string;
+    answer: string;
+}
+
+/** Questions linked to a specific position (FEN + moveIndex) */
+export interface PositionQuestion {
+    fen: string;
+    moveIndex?: number;
+    questions: PositionQuestionItem[];
+}
+
+/**
+ * Chess data structure for flashcards
+ */
 export interface ChessData {
     startingFen?: string;
     moves: string[];
@@ -12,6 +29,8 @@ export interface ChessData {
     openingName?: string;
     isValid?: boolean;
     validationError?: string;
+    /** Position-linked Q/A for concept review at specific positions */
+    positionQuestions?: PositionQuestion[];
 }
 
 /**

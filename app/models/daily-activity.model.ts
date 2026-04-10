@@ -84,6 +84,14 @@ const DailyActivitySchema = new Schema({
         count: { type: Number, default: 0 }
     }],
 
+    // Card types studied with counts (e.g., multiple-choice, chess, fill-blank)
+    cardTypes: [{
+        cardType: { type: String },           // e.g. "multiple-choice", "chess", "insight"
+        count: { type: Number, default: 0 },
+        correctCount: { type: Number, default: 0 },
+        studyTimeMs: { type: Number, default: 0 }
+    }],
+
     // Weakness tags studied with counts (for tracking improvement over time)
     weaknessTags: [{
         tagId: { type: String },           // Full tag: "weakness:endgame:rook-technique"
@@ -147,7 +155,8 @@ DailyActivitySchema.methods.recordReview = function(
     categoryId?: string,
     categoryName?: string,
     isNewCard?: boolean,
-    weaknessTagData?: Array<{ tagId: string; tagType: string; tagSpecific: string }>
+    weaknessTagData?: Array<{ tagId: string; tagType: string; tagSpecific: string }>,
+    cardType?: string
 ) {
     this.cardsReviewed++;
 
@@ -185,6 +194,23 @@ DailyActivitySchema.methods.recordReview = function(
                 categoryId,
                 categoryName: categoryName || 'Unknown',
                 count: 1
+            });
+        }
+    }
+
+    // Track card type (e.g., "multiple-choice", "chess", "fill-blank")
+    if (cardType) {
+        const existingType = this.cardTypes.find(ct => ct.cardType === cardType);
+        if (existingType) {
+            existingType.count++;
+            if (quality >= 3) existingType.correctCount++;
+            if (responseTimeMs) existingType.studyTimeMs += responseTimeMs;
+        } else {
+            this.cardTypes.push({
+                cardType,
+                count: 1,
+                correctCount: quality >= 3 ? 1 : 0,
+                studyTimeMs: responseTimeMs || 0
             });
         }
     }

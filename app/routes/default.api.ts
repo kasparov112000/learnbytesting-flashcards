@@ -1432,6 +1432,24 @@ export default function (app, express, services) {
     }
   });
 
+  // ============ Card View Tracking ============
+
+  // Increment view count when a card is displayed (before review)
+  router.post('/:id/viewed', async (req, res) => {
+    try {
+      const result = await Flashcard.findByIdAndUpdate(
+        req.params.id,
+        { $inc: { viewCount: 1 }, $set: { lastViewedAt: new Date() } },
+        { new: true, select: 'viewCount lastViewedAt' }
+      );
+      if (!result) return res.status(404).json({ error: 'Card not found' });
+      res.json({ result: { viewCount: result.viewCount, lastViewedAt: result.lastViewedAt } });
+    } catch (error: any) {
+      console.error('[Flashcards] View tracking error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Reset a card's progress
   router.post('/progress/:userId/reset/:flashcardId', async (req, res) => {
     try {
@@ -1475,8 +1493,21 @@ export default function (app, express, services) {
 
       // Update DailyActivity so the review counts toward "today" stats
       try {
+        // Fetch the flashcard to get its cardType for per-type tracking
+        const reviewedCard = await Flashcard.findById(req.params.flashcardId).select('cardType categories').lean();
+        const cardType = (reviewedCard as any)?.cardType || 'unknown';
+        const primaryCategory = (reviewedCard as any)?.categories?.[0];
+
         const dailyActivity = await (DailyActivity as any).getOrCreateToday(req.params.userId);
-        dailyActivity.recordReview(rating, responseTimeMs || 0);
+        dailyActivity.recordReview(
+          rating,
+          responseTimeMs || 0,
+          primaryCategory?._id?.toString(),
+          primaryCategory?.name,
+          undefined, // isNewCard
+          undefined, // weaknessTagData
+          cardType   // per-type tracking
+        );
         await dailyActivity.save();
       } catch (err: any) {
         console.warn('[Flashcards] DailyActivity update failed (non-blocking):', err.message);
