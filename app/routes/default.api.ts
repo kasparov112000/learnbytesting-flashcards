@@ -562,7 +562,7 @@ export default function (app, express, services) {
   // Get distinct categories with counts from flashcard data
   router.get('/flashcards/categories', async (req, res) => {
     try {
-      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName } = req.query;
+      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, filterCourseId } = req.query;
       const parsedFilterCategoryIds = filterCategoryIdsRaw
         ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
         : undefined;
@@ -570,6 +570,7 @@ export default function (app, express, services) {
         filterCategoryId: filterCategoryId as string,
         filterCategoryIds: parsedFilterCategoryIds,
         filterCategoryName: filterCategoryName as string,
+        filterCourseId: filterCourseId as string,
       });
 
       // Unwind the categories array and group by _id + name
@@ -643,10 +644,10 @@ export default function (app, express, services) {
     }
   });
 
-  // Get cardType counts scoped to a category
+  // Get cardType counts scoped to a category (and optionally a course)
   router.get('/flashcards/card-type-counts', async (req, res) => {
     try {
-      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName } = req.query;
+      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, filterCourseId } = req.query;
       const parsedFilterCategoryIds = filterCategoryIdsRaw
         ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
         : undefined;
@@ -654,6 +655,7 @@ export default function (app, express, services) {
         filterCategoryId: filterCategoryId as string,
         filterCategoryIds: parsedFilterCategoryIds,
         filterCategoryName: filterCategoryName as string,
+        filterCourseId: filterCourseId as string,
       });
 
       const pipeline = [
@@ -670,10 +672,10 @@ export default function (app, express, services) {
     }
   });
 
-  // Get distinct tags with counts, scoped to category
+  // Get distinct tags with counts, scoped to category and/or course
   router.get('/flashcards/tags', async (req, res) => {
     try {
-      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName } = req.query;
+      const { filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, filterCourseId } = req.query;
       const parsedFilterCategoryIds = filterCategoryIdsRaw
         ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
         : undefined;
@@ -681,6 +683,7 @@ export default function (app, express, services) {
         filterCategoryId: filterCategoryId as string,
         filterCategoryIds: parsedFilterCategoryIds,
         filterCategoryName: filterCategoryName as string,
+        filterCourseId: filterCourseId as string,
       });
       // Tags endpoint additionally requires tags to exist
       matchStage.tags = { $exists: true, $ne: [] };
@@ -700,10 +703,42 @@ export default function (app, express, services) {
     }
   });
 
+  // Stamp courseIds onto flashcards (idempotent backfill endpoint)
+  // Accepts { courseId, flashcardIds } and uses $addToSet to avoid duplicates
+  router.post('/flashcards/stamp-course-ids', async (req, res) => {
+    try {
+      const { courseId, flashcardIds } = req.body;
+      if (!courseId || !Array.isArray(flashcardIds) || flashcardIds.length === 0) {
+        return res.status(400).json({ error: 'courseId and flashcardIds[] are required' });
+      }
+
+      // Convert flashcard IDs to ObjectIds where valid
+      const mongoose = require('mongoose');
+      const objectIds = flashcardIds.map((id: string) => {
+        if (mongoose.Types.ObjectId.isValid(id)) {
+          try { return new mongoose.Types.ObjectId(id); } catch (_e) { /* fall through */ }
+        }
+        return id;
+      });
+
+      // $addToSet ensures courseId is only added once per flashcard (idempotent)
+      const result = await Flashcard.updateMany(
+        { _id: { $in: objectIds } },
+        { $addToSet: { courseIds: courseId } }
+      );
+
+      console.log(`[Flashcards] stamp-course-ids: courseId=${courseId}, matched=${result.matchedCount}, modified=${result.modifiedCount}`);
+      res.json({ result: { matched: result.matchedCount, modified: result.modifiedCount } });
+    } catch (error: any) {
+      console.error('[Flashcards] POST /flashcards/stamp-course-ids error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get all flashcards with filtering and search (using aggregate pipeline)
   router.get('/flashcards', async (req, res) => {
     try {
-      const { category, categoryId, filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, exactCategoryId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
+      const { category, categoryId, filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, exactCategoryId, filterCourseId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
       // Parse filterCategoryIds (comma-separated string → array)
       const filterCategoryIds = filterCategoryIdsRaw
@@ -716,6 +751,7 @@ export default function (app, express, services) {
         filterCategoryIds,
         filterCategoryName: filterCategoryName as string,
         exactCategoryId: exactCategoryId as string,
+        filterCourseId: filterCourseId as string,
         userId: userId as string,
       });
 

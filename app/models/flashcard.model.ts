@@ -55,6 +55,14 @@ const FlashcardSchema = new Schema({
         index: true
     }],
 
+    // Array of course IDs this flashcard belongs to (denormalized from Course → Lesson → Section → flashcardIds chain)
+    // Enables course-scoped filtering: { courseIds: "course-id" } returns only cards in that course
+    // Populated via backfill endpoint POST /flashcards/stamp-course-ids
+    courseIds: [{
+        type: Schema.Types.Mixed,
+        index: true
+    }],
+
     // The most specific (deepest) category - used for display and evaluation
     // Note: _id uses Mixed type to support both ObjectId and UUID/String formats
     primaryCategory: {
@@ -416,6 +424,7 @@ const FlashcardSchema = new Schema({
 FlashcardSchema.index({ cardType: 1, isActive: 1 });
 FlashcardSchema.index({ category: 1, isActive: 1 });
 FlashcardSchema.index({ categoryIds: 1, isActive: 1 });  // Main index for hierarchical queries
+FlashcardSchema.index({ courseIds: 1, isActive: 1 });   // Course-scoped flashcard queries
 FlashcardSchema.index({ 'primaryCategory._id': 1, isActive: 1 });
 FlashcardSchema.index({ tags: 1 });
 FlashcardSchema.index({ createdBy: 1, isActive: 1 });

@@ -10,6 +10,8 @@ interface CategoryMatchOptions {
   filterCategoryIds?: string[];
   /** Match only primaryCategory._id (excludes children categories) */
   exactCategoryId?: string;
+  /** Filter by course ID (matches against the denormalized courseIds array) */
+  filterCourseId?: string;
   filterTags?: string[];
   filterFlashcardIds?: string[];
   userId?: string;
@@ -31,6 +33,7 @@ export function buildCategoryMatchStage(options: CategoryMatchOptions = {}): any
     filterCategoryName,
     filterCategoryIds,
     exactCategoryId,
+    filterCourseId,
     filterTags,
     filterFlashcardIds,
     userId,
@@ -116,6 +119,20 @@ export function buildCategoryMatchStage(options: CategoryMatchOptions = {}): any
         { categoryId: { $in: allVariants } },
       ],
     });
+  }
+
+  // Course-scoped filtering (matches against denormalized courseIds array)
+  if (filterCourseId) {
+    let courseIdVariants: any[] = [filterCourseId];
+    const mongoose = require('mongoose');
+    if (mongoose.Types.ObjectId.isValid(filterCourseId)) {
+      try {
+        courseIdVariants.push(new mongoose.Types.ObjectId(filterCourseId));
+      } catch (_e) {
+        // Keep just the string version
+      }
+    }
+    andConditions.push({ courseIds: { $in: courseIdVariants } });
   }
 
   // Tag filtering
