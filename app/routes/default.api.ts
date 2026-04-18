@@ -469,6 +469,33 @@ export default function (app, express, services) {
     }
   });
 
+  // ==================== VARIATION ORDER CARD ====================
+
+  // Create (or update) an Order-type flashcard that tests the correct move sequence
+  // of a single course variation. Idempotent per {userId, openingName, variationName}
+  // so re-calls with edited moves simply update the existing card — FSRS history preserved.
+  router.post('/flashcards/from-variation-order', async (req, res) => {
+    try {
+      const { userId, userEmail, openingName, variationName, moves, eco, color, categoryId, categoryName, categories, tags, difficulty } = req.body;
+
+      // Minimum viable input: need userId, the two naming fields, and a non-empty moves array
+      if (!userId || !openingName || !variationName || !Array.isArray(moves) || moves.length === 0) {
+        return res.status(400).json({ error: 'Missing required fields: userId, openingName, variationName, moves[]' });
+      }
+
+      const result = await flashcardService.createFromVariationOrder(
+        { userId, userEmail, openingName, variationName, moves, eco, color, categoryId, categoryName, categories, tags, difficulty },
+        userProgressService
+      );
+
+      // 201 when a brand-new card was created; 200 when an existing card was updated
+      res.status(result.isNew ? 201 : 200).json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Create from variation order error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ==================== FLASHCARD CRUD ====================
 
   // Create flashcard

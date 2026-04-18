@@ -669,6 +669,117 @@ export class FlashcardService {
     }
 
     /**
+     * Create or update a single Order-type flashcard that quizzes the user on the
+     * correct move order of one variation (e.g. "The Byrne Variation — 4.Bg5").
+     *
+     * The Order card type already has a full drag-and-drop renderer in both the
+     * webapp (card-order.component.ts) and lbt-mobile (section-study.page.ts).
+     * This method feeds that renderer with variation moves so the user can
+     * memorize the exact sequence.
+     *
+     * Dedup: one Order card per {userId, openingName, variationName, cardType=order}
+     * so repeated calls for the same variation UPDATE the existing card rather
+     * than spawning duplicates — letting admins edit a variation and have the
+     * card auto-sync.
+     */
+    async createFromVariationOrder(data: {
+        userId: string;
+        userEmail: string;
+        openingName: string;          // parent course title (e.g. "Playing the Pirc Defense")
+        variationName: string;        // section title (e.g. "The Byrne Variation — 4.Bg5")
+        moves: string[];              // canonical move sequence, one ply per entry OR one full move per entry
+        eco?: string;
+        color?: 'white' | 'black';
+        categoryId?: string;
+        categoryName?: string;
+        categories?: Array<{ _id: string; name: string }>;
+        tags?: string[];
+        difficulty?: number;
+    }, userProgressService: any) {
+        const { userId, userEmail, openingName, variationName, moves, eco, color } = data;
+        if (!moves?.length) throw new Error('moves array is required and must be non-empty');
+
+        // Resolve categories the same way createFromOpeningLine does
+        let resolvedCategories: Array<{ _id: string; name: string }> = data.categories?.length
+            ? data.categories
+            : data.categoryId ? [{ _id: data.categoryId, name: data.categoryName || 'Chess Openings' }] : [];
+        const resolvedCategoryIds = resolvedCategories.map(c => c._id);
+
+        // Build orderData.items: one item per move in the sequence. The id must be
+        // stable across rebuilds so existing cards get their items updated cleanly.
+        // Using the 1-based position as id keeps this deterministic.
+        const items = moves.map((move, i) => ({ id: String(i + 1), content: move }));
+        const correctOrder = items.map(it => it.id);
+
+        // Dedup key: same user + same opening + same variation + Order cardType.
+        // This prevents dupes when the admin edits a variation and re-runs the build.
+        const existing = await Flashcard.findOne({
+            createdBy: userId,
+            cardType: 'order',
+            'orderData.variationName': variationName,
+            'orderData.openingName': openingName,
+            isActive: true,
+        });
+
+        const flashcardData: any = {
+            // Front = the prompt the user sees. Using a consistent template so any
+            // frontend can render it without needing to parse variationName out of orderData.
+            front: `Put the moves of "${variationName}" in the correct order`,
+            back: moves.join(' '),  // human-readable answer for reference
+            cardType: 'order',
+            orderData: {
+                items,
+                correctOrder,
+                // Namespaced fields so the card's provenance is queryable without
+                // polluting the generic orderData.items/correctOrder contract.
+                openingName,
+                variationName,
+            },
+            tags: data.tags?.length ? data.tags : ['opening', 'order', eco?.toLowerCase() || 'pirc', `${color || 'black'}-opening`].filter(Boolean),
+            difficulty: data.difficulty ?? 2,    // default to "medium" for move-order drills
+            canBeQuizzed: true,
+            sourceType: 'imported',
+            createdBy: userId,
+            userEmail,
+            users: [userId],
+            categoryIds: resolvedCategoryIds,
+            categories: resolvedCategories,
+            ...(resolvedCategories.length > 0 ? { primaryCategory: resolvedCategories[resolvedCategories.length - 1] } : {}),
+            environment: process.env.ENV_NAME || 'LOCAL',
+        };
+
+        if (existing) {
+            // Update items + correctOrder in place (admin edited the variation).
+            // Leave FSRS progress untouched — the user's review history for this
+            // variation is still valid even if one move was swapped.
+            await Flashcard.findByIdAndUpdate(existing._id, {
+                $set: {
+                    orderData: flashcardData.orderData,
+                    front: flashcardData.front,
+                    back: flashcardData.back,
+                    tags: flashcardData.tags,
+                    categoryIds: resolvedCategoryIds,
+                    categories: resolvedCategories,
+                },
+                $addToSet: { users: userId },
+            });
+            console.log(`[createFromVariationOrder] Updated existing card for "${variationName}"`);
+            return { created: 0, updated: 1, flashcardId: existing._id.toString(), isNew: false };
+        }
+
+        // Create a fresh Order card and seed FSRS progress so it enters the review queue
+        const processed = this.ensureCategoryIds(flashcardData);
+        const flashcard = await new Flashcard(processed).save();
+        try {
+            await userProgressService.getOrCreate(userId, flashcard._id.toString());
+        } catch (err) {
+            console.warn(`[createFromVariationOrder] FSRS init failed for card ${flashcard._id}:`, (err as any).message);
+        }
+        console.log(`[createFromVariationOrder] Created Order card for "${variationName}" (${moves.length} moves)`);
+        return { created: 1, updated: 0, flashcardId: flashcard._id.toString(), isNew: true };
+    }
+
+    /**
      * Update a card's difficulty. If the user has no reviews yet, reseed FSRS.
      */
     async updateDifficulty(flashcardId: string, difficulty: number, userProgressService: any) {
