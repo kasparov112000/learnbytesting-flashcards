@@ -284,7 +284,13 @@ const FlashcardSchema = new Schema({
             content: { type: String }
         }],
         correctOrder: [{ type: String }],
-        explanation: { type: String }
+        explanation: { type: String },
+        // Namespaced provenance for variation move-order drills.
+        // Used as dedup key by createFromVariationOrder() so re-runs UPDATE
+        // existing cards instead of spawning duplicates. Safe to leave unset
+        // on non-variation order cards (e.g. Angular lifecycle ordering).
+        openingName: { type: String },
+        variationName: { type: String }
     },
 
     // Chess-specific fields - LEGACY (for backward compatibility)
