@@ -669,6 +669,297 @@ export class FlashcardService {
     }
 
     /**
+     * Bulk-create flashcards from a finished game's deep AI analysis.
+     *
+     * Inputs:
+     *   - mistakes: one chessPosition card per flagged mistake/blunder (FEN + best move + explanation)
+     *   - aiReview: prose AI summary — broken into paragraphs, one text card per paragraph as
+     *     a strategic-insight card labelled by opening
+     *
+     * Cards are tagged with the sourceGameId + a `custom-from-analysis` tag so they can be
+     * distinguished from automated-opening cards and cleanly cascade-deleted on user removal.
+     *
+     * Returns { flashcardIds, createdCount } — no dedupe since the user intentionally chose
+     * to generate cards from this analysis (duplicates are allowed per product decision).
+     */
+    async createFromGameAnalysis(data: {
+        userId: string;
+        userEmail?: string;
+        gameId?: string;
+        openingName: string;
+        openingEco?: string;
+        playerColor?: 'white' | 'black';
+        mistakes?: Array<{
+            fen: string;
+            moveNumber: number;
+            playerMove?: string;       // what the user actually played (for context in the back)
+            bestMove: string;          // the engine/AI recommended move
+            explanation?: string;      // AI explanation of why best move is better
+            classification?: string;   // 'blunder' | 'mistake' | 'inaccuracy'
+        }>;
+        aiReview?: string;             // free-form markdown from the Claude deep analysis
+    }, userProgressService: any) {
+        const {
+            userId, userEmail, gameId, openingName, openingEco,
+            playerColor = 'white', mistakes = [], aiReview
+        } = data;
+
+        if (!userId || !openingName) {
+            throw new Error('userId and openingName are required');
+        }
+
+        // Other flashcard flows store the user's email (not Mongo _id) in `createdBy`
+        // and `users[]` — the study visibility filter relies on `createdBy === userId`
+        // where userId on the read path is the email. Prefer the email when provided
+        // and fall back to userId for backward compatibility.
+        const ownerKey = userEmail || userId;
+
+        // Shared metadata applied to every card generated from this analysis —
+        // keeps them linkable, discoverable, and cleanly cascadable on user delete.
+        const env = process.env.ENV_NAME || 'LOCAL';
+        const commonTags = ['custom-from-analysis', openingEco?.toLowerCase(), gameId ? `game-${gameId}` : '']
+            .filter(Boolean) as string[];
+        const flashcardIds: string[] = [];
+
+        // ===== 1. One chessPosition card per flagged mistake =====
+        for (const m of mistakes) {
+            if (!m.fen || !m.bestMove) continue;  // skip malformed entries
+
+            // Build a readable "why" sentence combining classification + explanation
+            const whyParts: string[] = [];
+            if (m.classification) whyParts.push(m.classification);
+            if (m.playerMove) whyParts.push(`you played ${m.playerMove}`);
+            const whyPrefix = whyParts.length ? `(${whyParts.join(', ')}) ` : '';
+            const backText = `${m.bestMove}${m.explanation ? ` — ${whyPrefix}${m.explanation}` : ''}`;
+
+            const cardData: any = {
+                front: `Move ${m.moveNumber} — what's the best move here? (${openingName})`,
+                back: backText,
+                chessData: {
+                    startingFen: m.fen,
+                    openingName,
+                    orientation: playerColor,
+                    ...(gameId ? { gameId } : {}),
+                },
+                cardType: 'chessPosition',
+                tags: commonTags,
+                canBeQuizzed: true,
+                sourceType: 'imported',
+                createdBy: ownerKey,
+                userEmail,
+                users: [ownerKey],
+                environment: env,
+            };
+
+            let processed = this.ensureCategoryIds(cardData);
+            processed = this.processChessFields(processed);
+            // Auto-classify difficulty if not provided
+            if (!processed.difficulty) {
+                processed.difficulty = difficultyRegistry.classify(processed);
+            }
+            const saved = await new Flashcard(processed).save();
+            flashcardIds.push(saved._id.toString());
+
+            // Initialize FSRS progress so the card immediately participates in reviews.
+            // Use ownerKey (email) to match the user visibility filter on the study read path.
+            try {
+                await userProgressService.getOrCreate(ownerKey, saved._id.toString());
+            } catch (err) {
+                console.warn(`[createFromGameAnalysis] FSRS init failed for ${saved._id}:`, (err as any).message);
+            }
+        }
+
+        // ===== 2. Theoretical insight cards from the prose AI review =====
+        // Claude is instructed to emit a <FLASHCARDS>[...] block with simple theoretical
+        // Q/A pairs + SAN moves (drives the "Show me on the board" CTA). Parse that
+        // block when present; fall back to paragraph-splitting for legacy reviews.
+        if (aiReview && aiReview.trim()) {
+            const structuredCards = this.parseStructuredFlashcards(aiReview);
+
+            if (structuredCards.length > 0) {
+                // Preferred path: structured Q/A cards (type: "text" | "chessPuzzle").
+                for (const c of structuredCards) {
+                    // Only "text" and "chessPuzzle" are allowed types per product decision.
+                    // Anything else (or missing type) falls back to "text".
+                    const resolvedType: 'text' | 'chessPuzzle' = c.type === 'chessPuzzle' ? 'chessPuzzle' : 'text';
+
+                    // chessPuzzle needs a concrete position + best move; if either is missing,
+                    // fall back to a text card rather than saving a broken puzzle.
+                    const usePuzzle = resolvedType === 'chessPuzzle' && !!c.startingFen && !!c.bestMove;
+
+                    // For chessPuzzle cards the renderer treats chessData.moves as
+                    // "moves to auto-play from the starting position" — but our
+                    // startingFen is already the puzzle position, so including both
+                    // causes the renderer to expect the PGN path back as the user's
+                    // input (showing "Esperado: e4" instead of the real solution).
+                    // Drop `moves` for puzzles; keep it only on text cards, where
+                    // it's used to show an illustrative board on reveal.
+                    const keepMoves = !usePuzzle && c.moves && c.moves.length > 0;
+
+                    const chessData: any = {
+                        openingName: c.openingName || openingName,
+                        orientation: playerColor,
+                        ...(keepMoves ? { moves: c.moves } : {}),
+                        ...(c.startingFen ? { startingFen: c.startingFen } : {}),
+                        ...(gameId ? { gameId } : {}),
+                    };
+
+                    const cardData: any = {
+                        front: c.question,
+                        back: c.answer,
+                        chessData,
+                        cardType: usePuzzle ? 'chessPuzzle' : 'text',
+                        tags: [...commonTags, usePuzzle ? 'puzzle' : 'theory'],
+                        canBeQuizzed: usePuzzle,
+                        sourceType: 'imported',
+                        createdBy: ownerKey,
+                        userEmail,
+                        users: [ownerKey],
+                        environment: env,
+                    };
+
+                    // For chessPuzzle cards, store the expected correct move so the
+                    // interactive renderer can validate the user's answer.
+                    if (usePuzzle) {
+                        cardData.chessData.correctMoves = [c.bestMove];
+                    }
+
+                    const saved = await new Flashcard(cardData).save();
+                    flashcardIds.push(saved._id.toString());
+
+                    try {
+                        await userProgressService.getOrCreate(ownerKey, saved._id.toString());
+                    } catch (err) {
+                        console.warn(`[createFromGameAnalysis] FSRS init failed for ${saved._id}:`, (err as any).message);
+                    }
+                }
+            } else {
+                // Legacy fallback — split the prose into paragraphs. Filter out the
+                // meta-text the user saw as garbage: reference-book citations, result
+                // lines, raw PGN, section headers, etc. These render as plain text cards.
+                const metaLineRegex = /^(\*\*|#|Reference|Books|You:|Result|Section|White|Black|Player|Game Moves|Opening:)/i;
+                const looksLikePgn = /^\s*1\.\s*\S/;  // lines starting with "1. ..."
+                const paragraphs = aiReview
+                    .replace(/<FLASHCARDS>[\s\S]*?<\/FLASHCARDS>/g, '')  // strip any malformed block
+                    .split(/\n\s*\n/)
+                    .map(p => p.trim())
+                    .filter(p => p.length >= 80 && !metaLineRegex.test(p) && !looksLikePgn.test(p))
+                    .slice(0, 5);
+
+                for (let i = 0; i < paragraphs.length; i++) {
+                    const text = paragraphs[i];
+                    // Derive a distinctive front from the paragraph's first non-empty line
+                    // so the generated cards don't all read "<opening> — strategic insight N"
+                    // (which becomes visually identical once the mobile card row clamps to
+                    // 2 lines and drops the numeric suffix). Strip leading markdown heading
+                    // markers and bold tokens, collapse whitespace, cap at ~80 chars.
+                    const firstLine = text
+                        .split(/\n/)
+                        .map(l => l.trim())
+                        .find(l => l.length > 0) || '';
+                    const derivedTitle = firstLine
+                        .replace(/^#+\s*/, '')
+                        .replace(/\*\*/g, '')
+                        .replace(/\s+/g, ' ')
+                        .trim()
+                        .slice(0, 80);
+                    // Fall back to the legacy numbered title only when we couldn't extract
+                    // anything usable (keeps uniqueness guaranteed via the index).
+                    const frontText = derivedTitle || `${openingName} — strategic insight ${i + 1}`;
+                    const cardData: any = {
+                        front: frontText,
+                        back: text,
+                        chessData: {
+                            openingName,
+                            orientation: playerColor,
+                            ...(gameId ? { gameId } : {}),
+                        },
+                        cardType: 'text',
+                        tags: [...commonTags, 'theory'],
+                        canBeQuizzed: false,
+                        sourceType: 'imported',
+                        createdBy: ownerKey,
+                        userEmail,
+                        users: [ownerKey],
+                        environment: env,
+                    };
+
+                    const saved = await new Flashcard(cardData).save();
+                    flashcardIds.push(saved._id.toString());
+
+                    try {
+                        await userProgressService.getOrCreate(ownerKey, saved._id.toString());
+                    } catch (err) {
+                        console.warn(`[createFromGameAnalysis] FSRS init failed for ${saved._id}:`, (err as any).message);
+                    }
+                }
+            }
+        }
+
+        console.log(`[createFromGameAnalysis] user=${userId} opening="${openingName}" created ${flashcardIds.length} cards`);
+        return { flashcardIds, createdCount: flashcardIds.length };
+    }
+
+    /**
+     * Extract the `<FLASHCARDS>...</FLASHCARDS>` JSON array that Claude is asked to
+     * append to deep-analysis reviews. Returns an empty array if the block is
+     * missing, malformed, or produces nothing usable. Each card carries a `type`
+     * field ("text" | "chessPuzzle") plus optional position data (moves,
+     * startingFen, bestMove) used by the downstream creator.
+     */
+    private parseStructuredFlashcards(aiReview: string): Array<{
+        type?: 'text' | 'chessPuzzle';
+        question: string;
+        answer: string;
+        moves?: string[];
+        startingFen?: string;
+        bestMove?: string;
+        openingName?: string;
+    }> {
+        const match = aiReview.match(/<FLASHCARDS>\s*([\s\S]*?)\s*<\/FLASHCARDS>/);
+        if (!match) return [];
+
+        let parsed: any;
+        try {
+            parsed = JSON.parse(match[1]);
+        } catch (err) {
+            console.warn('[createFromGameAnalysis] FLASHCARDS block present but JSON.parse failed:', (err as any).message);
+            return [];
+        }
+        if (!Array.isArray(parsed)) return [];
+
+        // Normalize + drop entries missing required fields. Unknown `type` values
+        // are ignored (caller defaults to "text").
+        return parsed
+            .filter((c: any) => c && typeof c.question === 'string' && typeof c.answer === 'string')
+            .map((c: any) => ({
+                type: c.type === 'chessPuzzle' ? 'chessPuzzle' as const
+                    : c.type === 'text' ? 'text' as const
+                    : undefined,
+                question: c.question.trim(),
+                answer: c.answer.trim(),
+                moves: Array.isArray(c.moves) ? c.moves.filter((m: any) => typeof m === 'string') : undefined,
+                startingFen: typeof c.startingFen === 'string' ? c.startingFen : undefined,
+                bestMove: typeof c.bestMove === 'string' ? c.bestMove : undefined,
+                openingName: typeof c.openingName === 'string' ? c.openingName : undefined,
+            }))
+            .slice(0, 10);  // safety cap
+    }
+
+    /**
+     * Bulk delete flashcards by a list of IDs. Used by the users microservice to
+     * cascade-remove custom cards when a user is deleted.
+     */
+    async bulkDeleteByIds(ids: string[]) {
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return { deletedCount: 0 };
+        }
+        // Hard-delete: these cards are user-scoped and belong to the deleted user's lifecycle
+        const result = await Flashcard.deleteMany({ _id: { $in: ids } });
+        return { deletedCount: result.deletedCount || 0 };
+    }
+
+    /**
      * Create or update a single Order-type flashcard that quizzes the user on the
      * correct move order of one variation (e.g. "The Byrne Variation — 4.Bg5").
      *
