@@ -56,6 +56,25 @@ export default function (app, express, services) {
     }
   });
 
+  // Bulk lookup — returns active decks that contain ANY of the given
+  // flashcardIds. Body uses POST (not GET) because the id list can exceed
+  // URL length limits for large courses. Used by guided-lessons to derive
+  // a course's deck list from its flashcard graph (Phase 2 of course
+  // centralization).
+  router.post('/decks/by-flashcards', async (req, res) => {
+    try {
+      const { flashcardIds } = req.body || {};
+      if (!Array.isArray(flashcardIds)) {
+        return res.status(400).json({ error: 'Body must include { flashcardIds: string[] }' });
+      }
+      const decks = await deckService.findByFlashcardIds(flashcardIds);
+      res.json({ result: decks });
+    } catch (err) {
+      console.error('[Decks] POST /decks/by-flashcards error:', err);
+      res.status(500).json({ error: (err as any).message });
+    }
+  });
+
   router.get('/decks/:id', async (req, res) => {
     try {
       const deck = await deckService.getById(req.params.id);
@@ -465,6 +484,49 @@ export default function (app, express, services) {
       res.status(200).json({ result });
     } catch (error: any) {
       console.error('[Flashcards] Create from opening line error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ==================== FROM GAME ANALYSIS ====================
+
+  // Generates user-owned flashcards from a finished game's deep AI analysis.
+  // Creates one chessPosition card per mistake + strategic-insight text cards
+  // from the prose AI review. Returns the generated flashcard IDs so the caller
+  // can register them in the user's customLessons[] structure.
+  router.post('/flashcards/from-game-analysis', async (req, res) => {
+    try {
+      const { userId, userEmail, gameId, openingName, openingEco, playerColor, mistakes, aiReview } = req.body;
+
+      if (!userId || !openingName) {
+        return res.status(400).json({ error: 'Missing required fields: userId, openingName' });
+      }
+
+      const result = await flashcardService.createFromGameAnalysis(
+        { userId, userEmail, gameId, openingName, openingEco, playerColor, mistakes, aiReview },
+        userProgressService
+      );
+
+      res.status(201).json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Create from game analysis error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Bulk-delete flashcards by IDs — used by users microservice to cascade-remove
+  // custom-from-analysis cards when a user is deleted. Protected only by the
+  // orchestrator's auth layer; direct access not exposed to browsers.
+  router.delete('/flashcards/bulk', async (req, res) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'ids[] is required' });
+      }
+      const result = await flashcardService.bulkDeleteByIds(ids);
+      res.status(200).json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] Bulk delete by IDs error:', error);
       res.status(500).json({ error: error.message });
     }
   });

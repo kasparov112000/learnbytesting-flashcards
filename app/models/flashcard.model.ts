@@ -144,6 +144,15 @@ const FlashcardSchema = new Schema({
         startingFen: { type: String },
         // Array of moves in SAN notation (e.g., ["e4", "e5", "Nf3"])
         moves: [{ type: String }],
+        // The correct move(s) the user should play from startingFen to solve the puzzle.
+        // REQUIRED for chessPuzzle cards — without it the UI cannot validate the user's
+        // answer and silently falls back to moves[practiceFromMove], which is WRONG when
+        // the side-to-move in startingFen is not the side who plays moves[practiceFromMove]
+        // (e.g. startingFen has "b" to move but moves[0] is a White move).
+        // Prior incident: cards generated from the "from-game-analysis" flow were being
+        // saved as chessPuzzle with bestMove intended but silently stripped by Mongoose
+        // because this field was missing from the schema.
+        correctMoves: [{ type: String }],
         // Final position FEN (auto-computed by server for validation)
         targetFen: { type: String },
         // Board orientation for display

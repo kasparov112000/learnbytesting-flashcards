@@ -209,6 +209,33 @@ export class DeckService {
         return await Deck.find({ flashcardIds: flashcardId, isActive: true });
     }
 
+    /**
+     * Bulk variant of findByFlashcardId — returns active decks that contain
+     * ANY of the given flashcardIds. Used by guided-lessons' GET /courses/:id/decks
+     * to derive a course's deck list from the course → lesson → flashcard graph
+     * without requiring a courseId field on Deck (planned for Phase 5 backfill).
+     *
+     * String inputs are normalized to ObjectIds so the index hits cleanly.
+     * De-duplicated server-side because a single deck may contain multiple
+     * matching cards.
+     */
+    async findByFlashcardIds(flashcardIds: string[]) {
+        if (!flashcardIds || flashcardIds.length === 0) return [];
+
+        // Normalize: accept hex strings AND already-ObjectId values.
+        // Skip malformed ids rather than throwing — the caller may have
+        // dirty data from older records.
+        const objectIds = flashcardIds
+            .filter(id => mongoose.Types.ObjectId.isValid(id))
+            .map(id => new mongoose.Types.ObjectId(id));
+        if (objectIds.length === 0) return [];
+
+        return await Deck.find({
+            flashcardIds: { $in: objectIds },
+            isActive: true,
+        }).sort({ updatedAt: -1 });
+    }
+
     async createFromRepertoire(data: {
         userId: string;
         userEmail?: string;

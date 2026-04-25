@@ -787,19 +787,24 @@ export class FlashcardService {
                     // fall back to a text card rather than saving a broken puzzle.
                     const usePuzzle = resolvedType === 'chessPuzzle' && !!c.startingFen && !!c.bestMove;
 
-                    // For chessPuzzle cards the renderer treats chessData.moves as
-                    // "moves to auto-play from the starting position" — but our
-                    // startingFen is already the puzzle position, so including both
-                    // causes the renderer to expect the PGN path back as the user's
-                    // input (showing "Esperado: e4" instead of the real solution).
-                    // Drop `moves` for puzzles; keep it only on text cards, where
-                    // it's used to show an illustrative board on reveal.
-                    const keepMoves = !usePuzzle && c.moves && c.moves.length > 0;
+                    // For chessPuzzle cards the renderer reads chessData.moves as the
+                    // expected-answer sequence starting from chessData.startingFen. If
+                    // we store the AI-provided `c.moves` (which is the PGN lead-in TO
+                    // the puzzle position), the renderer asks the user to play the
+                    // first opening move instead of the actual solution — hence the
+                    // "Esperado: e4" bug reported on Black-to-move puzzles. Fix:
+                    // for puzzles, overwrite `moves` with `[bestMove]` so the renderer
+                    // validates against the real solution. For text cards we keep
+                    // the lead-in path as-is (used only for the reveal-time board
+                    // preview, not move input).
+                    const chessPuzzleMoves: string[] | undefined = usePuzzle
+                        ? [c.bestMove!]
+                        : (c.moves && c.moves.length > 0 ? c.moves : undefined);
 
                     const chessData: any = {
                         openingName: c.openingName || openingName,
                         orientation: playerColor,
-                        ...(keepMoves ? { moves: c.moves } : {}),
+                        ...(chessPuzzleMoves ? { moves: chessPuzzleMoves } : {}),
                         ...(c.startingFen ? { startingFen: c.startingFen } : {}),
                         ...(gameId ? { gameId } : {}),
                     };
@@ -817,12 +822,6 @@ export class FlashcardService {
                         users: [ownerKey],
                         environment: env,
                     };
-
-                    // For chessPuzzle cards, store the expected correct move so the
-                    // interactive renderer can validate the user's answer.
-                    if (usePuzzle) {
-                        cardData.chessData.correctMoves = [c.bestMove];
-                    }
 
                     const saved = await new Flashcard(cardData).save();
                     flashcardIds.push(saved._id.toString());
