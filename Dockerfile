@@ -20,6 +20,13 @@ FROM node:16-alpine
 EXPOSE 3027
 WORKDIR /var/app
 
+# Issue #185: install python3 so the code-editor card runner can spawn
+# python subprocesses to grade learner submissions. The runner uses the
+# CODE_RUNNER_PYTHON_BIN env var (defaults to 'python3' on linux). Alpine's
+# python3 package is small (~50MB after extraction).
+RUN apk add --no-cache python3 \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python3
+
 COPY --from=builder /var/app/package.json .
 COPY --from=builder /var/app/package.json ./build/
 COPY --from=builder /var/app/build ./build

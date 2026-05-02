@@ -3,6 +3,7 @@ import { Flashcard } from '../models';
 import { DailyActivity } from '../models/daily-activity.model';
 import { FSRSService } from '../services/fsrs.service';
 import { AnalyticsService } from '../services/analytics.service';
+import { CodeRunnerService } from '../services/code-runner.service';
 import { buildCategoryMatchStage } from '../utils/category-match';
 import { resolveLanguage, resolveLanguageMany } from '../utils/resolve-language.util';
 import axios from 'axios';
@@ -21,6 +22,8 @@ export default function (app, express, services) {
 
   const { flashcardService, userProgressService, studyService, deckService } = services;
   const analyticsService = new AnalyticsService();
+  // Code runner for executable card-editor flashcards (issue #185)
+  const codeRunnerService = new CodeRunnerService();
 
   // ==================== HEALTH CHECK ====================
 
@@ -1323,6 +1326,52 @@ export default function (app, express, services) {
       res.json({ result: flashcard });
     } catch (error: any) {
       console.error('[Flashcards] Get by linked question error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ==================== CODE-EDITOR EXECUTION (issue #185) ====================
+
+  // Run a learner's submitted code against the card's testCases in a sandboxed
+  // python subprocess. Card MUST be cardType 'code-editor' with codeData.testCases.
+  // Returns per-test pass/fail + aggregate. Hidden tests have their stdout +
+  // expected/actual stripped so learners can't reverse-engineer them by probing.
+  router.post('/flashcards/:id/run-code', async (req, res) => {
+    try {
+      // Body: { submittedCode: string, code?: string }
+      // 'code' alias accepted for client convenience.
+      const submittedCode = req.body?.submittedCode ?? req.body?.code;
+      if (typeof submittedCode !== 'string' || submittedCode.length === 0) {
+        return res.status(400).json({ error: 'submittedCode (string) is required in request body' });
+      }
+      // Cap submission size — prevents megabyte payloads from clogging the runner
+      if (submittedCode.length > 100_000) {
+        return res.status(413).json({ error: 'submittedCode exceeds 100KB limit' });
+      }
+
+      // Look up the card to retrieve its testCases / language / strategy
+      const card: any = await flashcardService.getById(req.params.id);
+      if (!card) return res.status(404).json({ error: 'Flashcard not found' });
+      if (card.cardType !== 'code-editor') {
+        return res.status(400).json({ error: `Card is not a code-editor (cardType='${card.cardType}')` });
+      }
+      const cd = card.codeData || {};
+      if (!Array.isArray(cd.testCases) || cd.testCases.length === 0) {
+        return res.status(400).json({ error: 'Card has no testCases configured' });
+      }
+
+      // Execute submission against test cases
+      const result = await codeRunnerService.run({
+        code: submittedCode,
+        testCases: cd.testCases,
+        language: cd.language || 'python',
+        checkStrategy: cd.checkStrategy || 'output-match',
+        timeoutMs: cd.timeoutMs || 5000
+      });
+
+      res.json({ result });
+    } catch (error: any) {
+      console.error('[Flashcards] run-code error:', error);
       res.status(500).json({ error: error.message });
     }
   });

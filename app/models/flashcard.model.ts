@@ -31,9 +31,13 @@ const FlashcardSchema = new Schema({
     },
 
     // Explicit card type for type-aware rendering, filtering, and per-type UI
+    // 'code-editor' is the executable variant: learner writes code, server runs it
+    // against testCases in a sandbox and grades pass/fail. Distinct from the legacy
+    // 'code' (fill-in-blank) variant so the variant dispatcher can render an editor
+    // surface + Run button instead of inline blanks.
     cardType: {
         type: String,
-        enum: ['text', 'multipleChoice', 'trueFalse', 'chessPuzzle', 'chessOpening', 'chessGame', 'match', 'openingLine', 'openingLesson', 'interactiveGame', 'code', 'fillInBlanks', 'insight', 'order'],
+        enum: ['text', 'multipleChoice', 'trueFalse', 'chessPuzzle', 'chessOpening', 'chessGame', 'match', 'openingLine', 'openingLesson', 'interactiveGame', 'code', 'code-editor', 'fillInBlanks', 'insight', 'order'],
         default: 'text',
         index: true
     },
@@ -258,8 +262,12 @@ const FlashcardSchema = new Schema({
         order: { type: Number, default: 0 }
     },
 
-    // Code exercise data (for code-type flashcards)
+    // Code exercise data (for code / code-editor flashcards)
+    // - cardType 'code' + mode 'fillBlank': legacy in-line blanks (uses blanks[])
+    // - cardType 'code-editor' + mode 'editor': executable, uses testCases[] + checkStrategy
     codeData: {
+        // Programming language. Phase 1 supports 'python' for executable cards;
+        // 'typescript' is retained for legacy fill-blank cards.
         language: { type: String, default: 'typescript' },
         mode: { type: String, enum: ['fillBlank', 'editor'], default: 'fillBlank' },
         starterCode: { type: String },
@@ -269,7 +277,32 @@ const FlashcardSchema = new Schema({
             answer: { type: String },
             acceptedAnswers: [{ type: String }]
         }],
-        explanation: { type: String }
+        explanation: { type: String },
+
+        // ---- Executable-card fields (cardType: 'code-editor') ----
+        // Test cases the runner uses to grade a submission.
+        // 'output-match' compares stdout (trimmed) to expectedOutput.
+        // 'unit-tests' / 'ast-match' are reserved for later phases.
+        testCases: [{
+            // Optional human-readable description shown in the results panel
+            description: { type: String },
+            // Stdin to feed the program (optional — many programs read no input)
+            input: { type: String, default: '' },
+            // Expected stdout. Trimmed before comparison in 'output-match' mode.
+            expectedOutput: { type: String, required: true },
+            // When true the test case is hidden from the learner pre-submit
+            // (visible only in pass/fail outcome). Defaults to false.
+            hidden: { type: Boolean, default: false }
+        }],
+        // Grading strategy. Phase 1 implements only 'output-match'.
+        checkStrategy: {
+            type: String,
+            enum: ['output-match', 'unit-tests', 'ast-match'],
+            default: 'output-match'
+        },
+        // Hard subprocess timeout in ms. Capped server-side at 10000 to prevent
+        // runaway submissions from tying up the runner.
+        timeoutMs: { type: Number, default: 5000 }
     },
 
     // Fill-in-the-blanks data (for fillInBlanks-type flashcards)
