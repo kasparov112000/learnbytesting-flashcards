@@ -192,12 +192,22 @@ export class CodeRunnerService {
     const results: TestResult[] = [];
     let totalDuration = 0;
 
+    // Normalize line endings so CRLF (Windows) vs LF (Linux) doesn't cause
+    // spurious test failures. Python's print() appends the platform-native
+    // newline, which on Windows is \r\n. Test fixtures use \n. Without this
+    // normalization, FizzBuzz on a Windows runner produces "1\r\n2\r\nFizz"
+    // and gets compared against "1\n2\nFizz" → fails despite being correct.
+    // Reported by user (#185 follow-up): screenshot showed expected/got
+    // visually identical but test status FAIL — the difference was the \r.
+    const normalizeNewlines = (s: string): string =>
+      s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
     // Run sequentially. Parallel runs would let one slow test mask another and
     // would multiply the worst-case load on the host. Sequential keeps the
     // runner's resource footprint predictable.
     for (let i = 0; i < req.testCases.length; i++) {
       const tc = req.testCases[i];
-      const expected = (tc.expectedOutput || '').trim();
+      const expected = normalizeNewlines((tc.expectedOutput || '').trim());
       const stdinPayload = tc.input || '';
 
       let exec;
@@ -218,7 +228,9 @@ export class CodeRunnerService {
       }
 
       totalDuration += exec.durationMs;
-      const actual = exec.stdout.trim();
+      // Normalize the same way as expected so platform newlines don't cause
+      // false negatives. (See note above the for-loop.)
+      const actual = normalizeNewlines(exec.stdout.trim());
 
       // Decide outcome status. Order matters: timeout > crash > fail > pass.
       let status: TestResult['status'];
