@@ -830,12 +830,17 @@ export default function (app, express, services) {
   // Get all flashcards with filtering and search (using aggregate pipeline)
   router.get('/flashcards', async (req, res) => {
     try {
-      const { category, categoryId, filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, exactCategoryId, filterCourseId, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
+      const { category, categoryId, filterCategoryId, filterCategoryIds: filterCategoryIdsRaw, filterCategoryName, exactCategoryId, filterCourseId, courseId: courseIdQuery, tag, userId, limit, skip, sort, search, page, pageSize } = req.query;
 
       // Parse filterCategoryIds (comma-separated string → array)
       const filterCategoryIds = filterCategoryIdsRaw
         ? (filterCategoryIdsRaw as string).split(',').map(s => s.trim()).filter(Boolean)
         : undefined;
+
+      // CLAUDE.md mandates `courseId` as the canonical course-scoping param across
+      // user-facing endpoints. Treat the legacy `filterCourseId` as an alias so
+      // existing callers (study.service.ts, study-session.service.ts) keep working.
+      const effectiveCourseId = (courseIdQuery as string) || (filterCourseId as string);
 
       // Build match stage using shared category-match helper
       const matchStage = buildCategoryMatchStage({
@@ -843,7 +848,7 @@ export default function (app, express, services) {
         filterCategoryIds,
         filterCategoryName: filterCategoryName as string,
         exactCategoryId: exactCategoryId as string,
-        filterCourseId: filterCourseId as string,
+        filterCourseId: effectiveCourseId,
         userId: userId as string,
       });
 
